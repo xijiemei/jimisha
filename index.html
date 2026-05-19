@@ -4,13 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>基米杀 v1.1</title>
+    <link rel="preconnect" href="https://unpkg.com">
     <link rel="stylesheet" href="style.css">
-    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    <link rel="preload" as="image" href="assets/heroes/tom.png">
+    <link rel="preload" as="image" href="assets/heroes/duola.png">
+    <link rel="preload" as="image" href="assets/heroes/miaomiao.png">
+    <link rel="preload" as="image" href="assets/cards/sun.png">
+    <script defer src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
 </head>
 <body>
     <div id="audio-preload" style="display:none;"></div>
     <div id="death-banner" aria-live="polite"></div>
     <div id="judge-banner" aria-live="polite"></div>
+    <div id="turn-banner" aria-live="polite"></div>
 
     <div id="response-panel" style="display:none;">
         <h3 id="resp-title">需要响应</h3>
@@ -60,7 +66,7 @@
         <div id="screen-mp-login" class="screen">
             <button class="btn-back" onclick="location.reload()">🏠 返回</button>
             <h3>🌍 喵星中转站</h3>
-            <input type="text" id="mp-username" placeholder="给自己起个喵名" maxlength="8" value="基米">
+            <input type="text" id="mp-username" placeholder="给自己起个喵名" maxlength="8">
             <br><br>
             <input type="text" id="mp-room-name" placeholder="房间名字，例如：周五猫局" maxlength="12">
             <br><br>
@@ -108,6 +114,7 @@
                         <span style="font-size:11px; color:#666; margin-left:5px;">(爪牌: <span id="ui-my-hand-count">0</span>)</span>
                         <span id="drunk-status" style="display:none; color:purple; font-weight:bold;">🌿上头</span>
                         <span id="ui-maodie-stack" class="maodie-stack"></span>
+                        <span id="ui-seed-stack" class="seed-stack"></span>
                     </div>
                 </div>
                 <div class="music-controls">

@@ -8,14 +8,22 @@ const Game = {
     uiClickTimer: null,
     uiLongPressTimer: null,
     uiSuppressNextClick: false,
+    uiVirtualPlay: null,
+    uiBaibianDeclared: null,
+    uiBaibianCardIdx: null,
+    uiSunDiscard: null,
+    uiPrompt: null,
     isDiscardPhase: false,
     gameState: { players: [], deck: [], turnIdx: 0, logs: [], started: false, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null },
     
     currentBGM: new Audio(),
     bgmIndex: 0,
     isBGMPlaying: false,
+    soundSeqSeen: 0,
+    audioCache: {},
+    LOG_LIMIT: 50,
 
-    init: function() { this.loadBGM(); },
+    init: function() { this.preloadAssets(); this.loadBGM(); },
 
     // 安全 UI 更新
     setTx: function(id, val) {
@@ -38,7 +46,7 @@ const Game = {
 
     // 统一更新入口
     updateAll: function() {
-        if (this.mode === 'MP' && Net.isHost) Net.broadcast();
+        if (this.mode === 'MP' && Net.isHost) Net.scheduleBroadcast();
         else this.renderGame(this.gameState);
 
         if (this.gameState.gameOver) return;
@@ -84,6 +92,29 @@ const Game = {
     },
 
     // === 音乐模块 ===
+    preloadAssets: function() {
+        const urls = new Set();
+        Object.values(HEROES).forEach(h => h.img && urls.add(h.img));
+        Object.values(CARDS).forEach(c => c.img && urls.add(c.img));
+        ['hiss.mp3', 'bark.mp3', 'happy.mp3', 'huh.mp3', 'banana.mp3', 'death-oh-no.mp3', 'tom.mp3']
+            .forEach(file => urls.add(`assets/${file}`));
+        BGM_LIST.forEach(b => urls.add(b.file));
+
+        let box = document.getElementById('audio-preload');
+        urls.forEach(url => {
+            if (/\.(png|jpg|jpeg|webp)$/i.test(url)) {
+                let img = new Image();
+                img.decoding = 'async';
+                img.loading = 'eager';
+                img.src = url;
+            } else if (box && /\.mp3$/i.test(url)) {
+                let audio = document.createElement('audio');
+                audio.preload = 'auto';
+                audio.src = url;
+                box.appendChild(audio);
+            }
+        });
+    },
     loadBGM: function() {
         this.currentBGM.src = BGM_LIST[this.bgmIndex].file;
         this.currentBGM.loop = true;
@@ -98,15 +129,33 @@ const Game = {
         this.currentBGM.pause(); this.bgmIndex = (this.bgmIndex + 1) % BGM_LIST.length; this.loadBGM();
         if (this.isBGMPlaying) this.currentBGM.play().catch(()=>{});
     },
+    getSoundSrc: function(type) {
+        if (type === 'HISS') return 'assets/hiss.mp3';
+        if (type === 'BARK') return 'assets/bark.mp3';
+        if (type === 'HAPPY') return 'assets/happy.mp3';
+        if (type === 'HUH') return 'assets/huh.mp3';
+        if (type === 'BANANA') return 'assets/banana.mp3';
+        if (type === 'DEATH') return 'assets/death-oh-no.mp3';
+        if (type === 'TOM') return 'assets/tom.mp3';
+        return '';
+    },
+    queueSound: function(type) {
+        if (!this.gameState) return;
+        this.gameState.soundSeq = (this.gameState.soundSeq || 0) + 1;
+        this.gameState.soundType = type;
+        this.soundSeqSeen = this.gameState.soundSeq;
+        this.playSound(type);
+    },
     playSound: function(type) {
-        let audio = new Audio();
-        if (type === 'HISS') audio.src = 'assets/hiss.mp3';
-        else if (type === 'BARK') audio.src = 'assets/bark.mp3';
-        else if (type === 'HAPPY') audio.src = 'assets/happy.mp3';
-        else if (type === 'HUH') audio.src = 'assets/huh.mp3';
-        else if (type === 'BANANA') audio.src = 'assets/banana.mp3';
-        else if (type === 'DEATH') audio.src = 'assets/death-oh-no.mp3';
-        else return;
+        let src = this.getSoundSrc(type);
+        if (!src) return;
+        let audio = this.audioCache[type];
+        if (!audio) {
+            audio = new Audio(src);
+            audio.preload = 'auto';
+            this.audioCache[type] = audio;
+        }
+        audio.currentTime = 0;
         audio.volume = 0.6; audio.play().catch(()=>{
             if (type === 'DEATH') this.playFallbackDeathSound();
         });
@@ -145,6 +194,10 @@ const Game = {
         if (d) {
             d.innerHTML = `<div>&gt; ${this.escapeHTML(msg)}</div>` + d.innerHTML;
             this.gameState.logs.push(msg);
+            if (this.gameState.logs.length > this.LOG_LIMIT) {
+                this.gameState.logs.splice(0, this.gameState.logs.length - this.LOG_LIMIT);
+            }
+            while (d.children.length > this.LOG_LIMIT) d.removeChild(d.lastChild);
         }
     },
     getPlayerName: function(id) {
@@ -225,11 +278,21 @@ const Game = {
         banner.classList.add('show');
         setTimeout(() => banner.classList.remove('show'), 2400);
     },
+    showTurnBanner: function(player) {
+        let banner = document.getElementById('turn-banner');
+        if (!banner || !player) return;
+        banner.innerHTML = `<div class="turn-title">现在是</div><div class="turn-name">${this.escapeHTML(player.name)} 的回合</div>`;
+        banner.classList.remove('show');
+        void banner.offsetWidth;
+        banner.classList.add('show');
+        setTimeout(() => banner.classList.remove('show'), 1800);
+    },
     createDeck: function() {
         let deck = [];
         const add = (proto, count) => { for(let i=0; i<count; i++) { let s = SUITS[Math.floor(Math.random()*4)]; deck.push({ ...proto, suit: s, color: COLORS[s], uid: Math.random() }); }};
         add(CARDS.HISS, 24); add(CARDS.DODGE, 12); add(CARDS.TREAT, 8); add(CARDS.AOE, 2); add(CARDS.BARK, 1);
         add(CARDS.CATNIP, 4); add(CARDS.FIGHT, 3); add(CARDS.CUP, 4); add(CARDS.PUNCH, 4); add(CARDS.EARS, 3);
+        add(CARDS.SUN, 3);
         return deck.sort(() => Math.random() - 0.5);
     },
     drawCards: function(p, count) {
@@ -262,7 +325,100 @@ const Game = {
         return this.gameState.players.find(p => p.alive && p.id !== source.id && ids.includes(p.id) && p.hand.some(c => c.type === 'nullify')) || null;
     },
     shouldAskNullify: function(card) {
-        return !!card && ['aoe', 'bark', 'duel', 'dismantle', 'steal'].includes(card.type);
+        return !!card && ['duel', 'dismantle', 'steal'].includes(card.type);
+    },
+    getDeclaredCard: function(name) {
+        return Object.values(CARDS).find(c => c.name === name && c.type !== 'defense' && c.type !== 'nullify') || null;
+    },
+    showPrompt: function(title, msg, buttons) {
+        this.uiPrompt = { title, msg, buttons: buttons || [] };
+        this.renderGame(this.gameState);
+    },
+    showNotice: function(msg) {
+        this.showPrompt('提示', msg, [{ text: '知道了', cls: 'primary', cb: () => { this.uiPrompt = null; this.renderGame(this.gameState); } }]);
+    },
+    openBaibianChoice: function() {
+        let me = this.gameState.players.find(p => p.id === this.myId);
+        if (!me || me.hero !== 'TOM') return;
+        if (me.baibianUsed) return this.showNotice('【百变】一回合只能使用一次。');
+        if (me.hand.length < 2) return this.showNotice('【百变】至少需要两张手牌：一张弃置，一张当作声明的牌使用。');
+        let buttons = Object.values(CARDS)
+            .filter(c => c.type !== 'defense' && c.type !== 'nullify')
+            .map(c => ({ text: c.name, cls: 'primary', cb: () => this.chooseBaibianCard(c.name) }));
+        buttons.push({ text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.renderGame(this.gameState); } });
+        this.showPrompt('发动【百变】', '请选择要声明的牌名。', buttons);
+    },
+    chooseBaibianCard: function(declaredName) {
+        let me = this.gameState.players.find(p => p.id === this.myId);
+        let virtualCard = this.getDeclaredCard(declaredName);
+        if (!me || !virtualCard) return;
+        if (virtualCard.type === 'attack' && me.hasHissed && me.hero !== 'MAODIE') {
+            this.uiPrompt = null;
+            return this.showNotice('本回合已经哈气过了，不能再把手牌当作【哈气】使用。');
+        }
+        this.uiBaibianDeclared = virtualCard.name;
+        this.uiBaibianCardIdx = null;
+        this.uiPrompt = null;
+        this.showPrompt('选择手牌', `请选择一张手牌，将它当作【${virtualCard.name}】使用；系统会再弃置你另一张手牌。`, [
+            { text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiBaibianDeclared = null; this.uiBaibianCardIdx = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } }
+        ]);
+    },
+    chooseBaibianHandCard: function(cardIdx) {
+        let me = this.gameState.players.find(p => p.id === this.myId);
+        let virtualCard = this.getDeclaredCard(this.uiBaibianDeclared);
+        if (!me || !virtualCard) return;
+        this.uiBaibianCardIdx = cardIdx;
+        this.uiSelectedCardIdx = cardIdx;
+        this.showPrompt('选择弃牌', `请选择一张要弃置的手牌，然后将刚才选的手牌当作【${virtualCard.name}】使用。`, [
+            { text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiBaibianDeclared = null; this.uiBaibianCardIdx = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } }
+        ]);
+    },
+    chooseBaibianDiscardCard: function(discardIdx) {
+        let me = this.gameState.players.find(p => p.id === this.myId);
+        let virtualCard = this.getDeclaredCard(this.uiBaibianDeclared);
+        let cardIdx = this.uiBaibianCardIdx;
+        if (!me || !virtualCard || cardIdx === null || cardIdx === undefined) return;
+        if (discardIdx === cardIdx) return this.showNotice('这张牌要当作声明牌使用，请选择另一张手牌弃置。');
+        let needsTarget = ['attack', 'duel', 'dismantle', 'steal'].includes(virtualCard.type);
+        this.uiPrompt = null;
+        this.uiBaibianDeclared = null;
+        this.uiBaibianCardIdx = null;
+        if (needsTarget) {
+            this.uiVirtualPlay = { cardIdx, discardIdx, declaredName: virtualCard.name };
+            this.uiSelectedCardIdx = cardIdx;
+            this.showPrompt('选择目标', `请选择目标，将这张牌当作【${virtualCard.name}】使用。`, [
+                { text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiVirtualPlay = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } }
+            ]);
+        } else if (virtualCard.type === 'sun') {
+            this.openBaibianSunPrompt(cardIdx, discardIdx);
+        } else {
+            Net.sendAction('BAIBIAN', { cardIdx, discardIdx, declaredName: virtualCard.name });
+            this.uiSelectedCardIdx = -1;
+        }
+    },
+    openBaibianSunPrompt: function(cardIdx, discardIdx) {
+        let me = this.gameState.players.find(p => p.id === this.myId);
+        if (!me) return;
+        let available = Math.max(0, me.hand.length - 2);
+        let buttons = [];
+        for (let i = 0; i <= available; i++) {
+            buttons.push({ text: `弃 ${i} 张`, cls: i >= 2 ? 'success' : 'primary', cb: () => this.startBaibianSunDiscardPick(cardIdx, discardIdx, i) });
+        }
+        buttons.push({ text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } });
+        this.showPrompt('百变【午后阳光】', '请选择要额外弃置的牌数。弃至少两张会回复1点体力。', buttons);
+    },
+    startBaibianSunDiscardPick: function(cardIdx, discardIdx, count) {
+        this.uiPrompt = null;
+        if (count <= 0) {
+            Net.sendAction('BAIBIAN', { cardIdx, discardIdx, declaredName: '午后阳光', sunDiscardIndexes: [] });
+            this.uiSelectedCardIdx = -1;
+            return;
+        }
+        this.uiSunDiscard = { cardIdx, count, selected: [], locked: [cardIdx, discardIdx], baibian: { cardIdx, discardIdx } };
+        this.uiSelectedCardIdx = cardIdx;
+        this.showPrompt('选择弃牌', `请选择 ${count} 张要因【午后阳光】弃置的手牌。`, [
+            { text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSunDiscard = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } }
+        ]);
     },
     askForNullify: function(source, card, target, effect) {
         let responder = this.findNullifyResponder(source, this.getTrickTargets(source, card, target));
@@ -302,10 +458,10 @@ const Game = {
         }
         this.initGameLogic(ps);
     },
-    createPlayer: function(id, name, isBot) { return { id, name, isBot, role: '', hero: '', hp: 0, maxHp: 0, hand: [], alive: true, hasHissed: false, hissStack: 0, botAttackCount: 0, cryingUsed: false, isDrunk: false, lastAction: '' }; },
+    createPlayer: function(id, name, isBot) { return { id, name, isBot, role: '', hero: '', hp: 0, maxHp: 0, hand: [], alive: true, hasHissed: false, hissStack: 0, botAttackCount: 0, cryingUsed: false, isDrunk: false, lastAction: '', timeMachineUsed: false, seedUses: 0, seeds: {}, baibianUsed: false }; },
 
     initGameLogic: function(players) {
-        this.gameState = { players, deck: this.createDeck(), turnIdx: 0, logs: [], started: true, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null };
+        this.gameState = { players, deck: this.createDeck(), turnIdx: 0, logs: [], started: true, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null, soundSeq: 0, soundType: '' };
         let roles = players.length === 2
             ? ['喵皇', '反骨喵'].sort(() => Math.random() - 0.5)
             : ['喵皇', '护驾喵', '反骨喵', '反骨喵', '老六'].sort(() => Math.random() - 0.5);
@@ -328,18 +484,19 @@ const Game = {
         
         if (!p.alive) { this.nextTurn(); return; }
         this.log(`👉 轮到 [${p.name}] 了喵`);
-        p.hasHissed = false; p.cryingUsed = false; p.isDrunk = false; p.botAttackCount = 0;
+        this.showTurnBanner(p);
+        p.hasHissed = false; p.cryingUsed = false; p.isDrunk = false; p.botAttackCount = 0; p.baibianUsed = false;
 
         if (p.hero === 'HAPPY' && p.hp < p.maxHp) {
             if (p.isBot) {
                 if (p.hp < p.maxHp && Math.random() > 0.3) { 
                     this.log(`🎵 ${p.name} 乐天派发作，回1血`); p.hp++; this.drawCards(p, 1); 
-                    this.playSound('HAPPY'); p.lastAction='🎵 乐天'; 
+                    this.queueSound('HAPPY'); p.lastAction='🎵 乐天'; 
                 } else this.drawCards(p, 2);
             } else {
                 this.askForResponse('SKILL_HAPPY_START', -1, p.id); return;
             }
-        } else { this.drawCards(p, 2); }
+        } else { this.drawCards(p, p.hero === 'LOWPOLY' ? 3 : 2); }
 
         if (!this.gameState.pendingAction) {
             if (p.id === this.myId) this.isDiscardPhase = false;
@@ -390,7 +547,22 @@ const Game = {
             if (aI > -1) actionTaken = this.handleActionInternal(bot, {type:'PLAY_CARD', cardIdx: aI});
         }
 
-        // 4. 杀
+        // 4. 锦囊：午后阳光
+        if (!actionTaken) {
+            let sI = bot.hand.findIndex(c => c.type === 'sun');
+            if (sI > -1 && bot.hand.length >= 3) actionTaken = this.handleActionInternal(bot, {type:'PLAY_CARD', cardIdx: sI});
+        }
+
+        // 5. 锦囊：猫猫互殴
+        if (!actionTaken) {
+            let dI = bot.hand.findIndex(c => c.type === 'duel');
+            if (dI > -1 && bot.hand.some(c => c.type === 'attack')) {
+                let target = this.getBotEnemy(bot);
+                if (target) actionTaken = this.handleActionInternal(bot, {type:'PLAY_CARD', cardIdx: dI, targetId: target.id});
+            }
+        }
+
+        // 6. 杀
         if (!actionTaken) {
             let kI = bot.hand.findIndex(c => c.type === 'attack');
             let canBotAttack = (!bot.hasHissed || bot.hero === 'MAODIE') && !(this.gameState.players.length === 2 && bot.hero !== 'MAODIE' && bot.botAttackCount >= 1);
@@ -485,6 +657,47 @@ const Game = {
             return false;
         }
 
+        if (action.type === 'BAIBIAN') {
+            if (p.hero !== 'TOM' || this.gameState.discardingPlayerId === p.id) return false;
+            if (p.baibianUsed) return false;
+            let cardIdx = Number(action.cardIdx);
+            let discardIdx = Number(action.discardIdx);
+            if (!Number.isInteger(cardIdx) || !Number.isInteger(discardIdx) || cardIdx === discardIdx) return false;
+            if (cardIdx < 0 || discardIdx < 0 || cardIdx >= p.hand.length || discardIdx >= p.hand.length) return false;
+            let virtualCard = this.getDeclaredCard(action.declaredName);
+            if (!virtualCard) return false;
+            let rawSunDiscardIndexes = Array.isArray(action.sunDiscardIndexes) ? action.sunDiscardIndexes.map(Number) : [];
+            let targetId = action.targetId !== undefined && action.targetId !== null ? Number(action.targetId) : null;
+            let target = Number.isInteger(targetId) ? this.gameState.players.find(pl => pl.id === targetId) : null;
+            let needsTarget = ['attack', 'duel', 'dismantle', 'steal'].includes(virtualCard.type);
+            if (needsTarget && (!target || !target.alive || target.id === p.id)) return false;
+            if (virtualCard.type === 'steal' && this.getDistance(p, target) > 1) return false;
+            if ((virtualCard.type === 'dismantle' || virtualCard.type === 'steal') && target.hand.length === 0) return false;
+            if (virtualCard.type === 'attack' && p.hasHissed) return false;
+            if (virtualCard.type === 'heal' && p.hp >= p.maxHp) return false;
+            if (target && target.hero === 'LOWPOLY' && target.hand.length === 0 && virtualCard.type === 'attack') return false;
+
+            let removed = [cardIdx, discardIdx].sort((a, b) => a - b);
+            let sunDiscardIndexes = rawSunDiscardIndexes
+                .filter(i => Number.isInteger(i) && i >= 0 && i < p.hand.length && !removed.includes(i))
+                .map(i => i - removed.filter(r => r < i).length);
+            [cardIdx, discardIdx].sort((a, b) => b - a).forEach(i => p.hand.splice(i, 1));
+            let card = { ...virtualCard, uid: Math.random(), suit: '百', color: 'red', fromBaibian: true };
+            if (card.type === 'sun') card.sunDiscardIndexes = sunDiscardIndexes;
+            p.baibianUsed = true;
+            p.lastAction = target ? `🎭 百变【${card.name}】→${target.name}` : `🎭 百变【${card.name}】`;
+            this.log(`🎭 ${p.name} 发动百变，声明【${card.name}】`);
+            if (card.type === 'heal') {
+                if (p.hp < p.maxHp) p.hp++;
+                this.updateAll();
+                return true;
+            }
+            if (this.shouldAskNullify(card) && this.askForNullify(p, card, target, { sourceId: p.id, targetId: target ? target.id : null, card })) return true;
+            this.applyCardEffect(p, card, target);
+            this.updateAll();
+            return true;
+        }
+
         if (action.type === 'PLAY_CARD') {
             if (this.gameState.discardingPlayerId === p.id) return false;
             let cardIdx = Number(action.cardIdx);
@@ -493,51 +706,64 @@ const Game = {
             let targetId = action.targetId !== undefined && action.targetId !== null ? Number(action.targetId) : null;
             let target = targetId !== null && Number.isInteger(targetId) ? this.gameState.players.find(pl=>pl.id===targetId) : null;
             let needsTarget = ['attack', 'duel', 'dismantle', 'steal'].includes(card.type);
+            let effectiveCard = card;
+            if (p.hero === 'DUOLA' && action.playAs === 'heal' && card.type === 'buff') {
+                effectiveCard = { ...CARDS.TREAT, uid: card.uid, suit: card.suit, color: card.color, fromCopper: true };
+            } else if (p.hero === 'DUOLA' && action.playAs === 'buff' && card.type === 'heal') {
+                effectiveCard = { ...CARDS.CATNIP, uid: card.uid, suit: card.suit, color: card.color, fromCopper: true };
+            } else if (card.type === 'sun') {
+                let raw = Array.isArray(action.discardIndexes) ? action.discardIndexes.map(Number) : [];
+                effectiveCard = { ...card, sunDiscardIndexes: raw.filter(i => i !== cardIdx).map(i => i > cardIdx ? i - 1 : i) };
+            }
 
             if (card.type === 'defense' || card.type === 'nullify') {
-                if (p.id === this.myId) alert(`【${card.name}】是被动牌，无法主动打出！`);
+                if (p.id === this.myId) this.showNotice(`【${card.name}】是被动牌，无法主动打出。`);
                 return false;
             }
 
             if (needsTarget && (!target || !target.alive || target.id === p.id)) {
-                if (p.id === this.myId) alert('请选择一个有效目标');
+                if (p.id === this.myId) this.showNotice('请选择一个有效目标。');
                 return false;
             }
 
-            if (card.type === 'attack' && p.hasHissed && p.hero !== 'MAODIE') {
-                if (p.id === this.myId) alert('本回合已经哈气过了');
+            if (effectiveCard.type === 'attack' && p.hasHissed && p.hero !== 'MAODIE') {
+                if (p.id === this.myId) this.showNotice('本回合已经哈气过了。');
                 return false;
             }
 
-            if (target && target.hero === 'LOWPOLY' && target.hand.length === 0 && card.type === 'attack') {
-                if (p.id === this.myId) alert("对方丑橘（空手牌），无法指定！");
+            if (target && target.hero === 'LOWPOLY' && target.hand.length === 0 && effectiveCard.type === 'attack') {
+                if (p.id === this.myId) this.showNotice("对方丑橘空手牌，无法被【哈气】指定。");
                 return false;
             }
 
-            if (card.type === 'steal' && this.getDistance(p, target) > 1) {
-                if (p.id === this.myId) alert('【这一拳】只能对距离为 1 的目标使用');
+            if (effectiveCard.type === 'steal' && this.getDistance(p, target) > 1) {
+                if (p.id === this.myId) this.showNotice('【这一爪】只能对距离为 1 的目标使用。');
                 return false;
             }
 
-            if ((card.type === 'dismantle' || card.type === 'steal') && target.hand.length === 0) {
-                if (p.id === this.myId) alert('目标没有可以操作的牌');
+            if ((effectiveCard.type === 'dismantle' || effectiveCard.type === 'steal') && target.hand.length === 0) {
+                if (p.id === this.myId) this.showNotice('目标没有可以操作的牌。');
                 return false;
             }
             
             p.lastAction = target ? `⚔️ 对 ${target.name} ${card.name}` : `🎴 ${card.name}`;
 
-            if (card.type === 'heal') {
-                if (p.hp >= p.maxHp) { if (p.id === this.myId) alert("满血"); return false; }
+            if (effectiveCard.type === 'heal') {
+                if (p.hp >= p.maxHp) { if (p.id === this.myId) this.showNotice("已经满血，不能这样使用【冻干】。"); return false; }
                 p.hand.splice(cardIdx, 1); p.hp++; this.log(`💊 ${p.name} 回血`); done = true;
+                if (p.hero === 'DUOLA') {
+                    this.drawCards(p, 1);
+                    this.log(`🔔 ${p.name} 发动铜锣，额外摸1张牌`);
+                }
             } else {
-                if(card.type==='buff'||card.type==='aoe'||card.type==='bark'||target) { 
+                if(card.type==='buff'||card.type==='aoe'||card.type==='bark'||card.type==='sun'||target) { 
                     p.hand.splice(cardIdx, 1); done = true; 
                 } else return false;
             }
 
             if (done) {
-                if (this.shouldAskNullify(card) && this.askForNullify(p, card, target, { sourceId: p.id, targetId: target ? target.id : null, card })) return true;
-                this.applyCardEffect(p, card, target);
+                if (this.shouldAskNullify(effectiveCard) && this.askForNullify(p, effectiveCard, target, { sourceId: p.id, targetId: target ? target.id : null, card: effectiveCard })) return true;
+                this.applyCardEffect(p, effectiveCard, target);
                 this.updateAll(); return true;
             }
         }
@@ -546,7 +772,7 @@ const Game = {
 
     applyCardEffect: function(p, card, target) {
         if (card.type === 'attack') {
-            this.playSound('HISS');
+            this.queueSound('HISS');
             let dmg = p.isDrunk ? 2 : 1;
             if (p.isDrunk) { p.isDrunk = false; this.log("💨 猫薄荷上头，哈气+1"); }
             
@@ -569,7 +795,30 @@ const Game = {
                 this.askForResponse('DODGE', p.id, target.id, {damage: dmg});
             }
         } 
-        else if (card.type === 'buff') { p.isDrunk = true; this.log(`🌿 ${p.name} 吸猫薄荷`); p.lastAction = `🌿 吸猫薄荷`; }
+        else if (card.type === 'buff') {
+            p.isDrunk = true;
+            this.log(`🌿 ${p.name} 吸猫薄荷`);
+            p.lastAction = `🌿 吸猫薄荷`;
+            if (p.hero === 'DUOLA') {
+                this.drawCards(p, 1);
+                this.log(`🔔 ${p.name} 发动铜锣，额外摸1张牌`);
+            }
+        }
+        else if (card.type === 'sun') {
+            let discardIndexes = Array.isArray(card.sunDiscardIndexes) ? card.sunDiscardIndexes.filter(i => Number.isInteger(i) && i >= 0 && i < p.hand.length) : [];
+            if (p.isBot && discardIndexes.length === 0) {
+                discardIndexes = p.hand.map((_, i) => i).slice(0, Math.min(2, p.hand.length));
+            }
+            discardIndexes = Array.from(new Set(discardIndexes)).sort((a, b) => b - a);
+            let discardCount = discardIndexes.length;
+            if (p.hand.length > 0) {
+                discardIndexes.forEach(i => p.hand.splice(i, 1));
+            }
+            this.drawCards(p, discardCount);
+            if (discardCount >= 2 && p.hp < p.maxHp) p.hp++;
+            this.log(`☀️ ${p.name} 使用午后阳光，弃${discardCount}摸${discardCount}${discardCount >= 2 ? '，回复1血' : ''}`);
+            p.lastAction = '☀️ 午后阳光';
+        }
         else if (card.type === 'aoe' || card.type === 'bark') { 
             this.log(`📢 ${p.name} 放AOE`); this.startAOE(p, card.type); 
         }
@@ -588,7 +837,7 @@ const Game = {
     },
 
     resolveResponse: function(pid, choice) {
-        choice = choice === 'YES' ? 'YES' : 'NO';
+        choice = choice === 'NULLIFY' ? 'NULLIFY' : (choice === 'YES' ? 'YES' : 'NO');
         if (this.gameState.gameOver) return;
         let pending = this.gameState.pendingAction;
         if (!pending || pending.targetId !== pid) return;
@@ -616,7 +865,16 @@ const Game = {
         if (pending.type === 'AOE_ASK') {
             let req = pending.cardType;
             this.gameState.pendingAction = null;
-            if (choice === 'YES') {
+            if (choice === 'NULLIFY') {
+                let nidx = t.hand.findIndex(c => c.type === 'nullify');
+                if (nidx > -1) {
+                    t.hand.splice(nidx, 1);
+                    this.log(`✈️ ${t.name} 发动飞机耳，只抵消了${pending.cardName || '锦囊'}对自己的效果`);
+                    t.lastAction = '✈️ 飞机耳';
+                } else {
+                    this.resolveDamage(t, 1, s);
+                }
+            } else if (choice === 'YES') {
                 let idx = t.hand.findIndex(c => c.type === req);
                 if (idx > -1) { 
                     t.hand.splice(idx, 1); 
@@ -641,7 +899,7 @@ const Game = {
             if (choice === 'YES' && t.hand.length > 0) {
                 let randIdx = Math.floor(Math.random() * t.hand.length);
                 t.hand.splice(randIdx, 1); this.log(`❓ ${t.name} 发动疑惑，哈气无效！`);
-                this.playSound('HUH'); t.lastAction = "❓ 疑惑成功";
+                this.queueSound('HUH'); t.lastAction = "❓ 疑惑成功";
                 this.gameState.pendingAction = null; this.updateAll();
                 if (s && s.id === this.gameState.turnIdx) this.resumeTurn(s);
                 return;
@@ -658,7 +916,7 @@ const Game = {
                 let j = this.getJudgment(); this.log(`🍌 判定: ${j.color}`);
                 if (j.color === 'black') { 
                     this.showJudgeBanner('香蕉猫哭哭成功', '黑爪爪落地，这口哈气被喵喵擦掉了！', 'success');
-                    this.log(`🍌 ${t.name} 哭哭成功，免疫伤害`); this.playSound('BANANA'); t.lastAction='😭 哭哭成功'; 
+                    this.log(`🍌 ${t.name} 哭哭成功，免疫伤害`); this.queueSound('BANANA'); t.lastAction='😭 哭哭成功'; 
                     this.gameState.pendingAction = null; this.updateAll();
                     if (s && s.id === this.gameState.turnIdx) this.resumeTurn(s);
                     return; 
@@ -702,7 +960,7 @@ const Game = {
         }
 
         if (pending.type === 'SKILL_HAPPY_START') {
-            if (choice === 'YES') { t.hp++; this.drawCards(t, 1); this.playSound('HAPPY'); t.lastAction='🎵 乐天回血'; }
+            if (choice === 'YES') { t.hp++; this.drawCards(t, 1); this.queueSound('HAPPY'); t.lastAction='🎵 乐天回血'; }
             else this.drawCards(t, 2);
             this.gameState.pendingAction = null;
             this.updateAll();
@@ -742,15 +1000,56 @@ const Game = {
 
     resolveDamage: function(t, n, s) {
         if(t.hero==='MAODIE' && n>1) n=1;
+        if (s && s.hero === 'MIAOMIAO' && s.id !== t.id && (s.seedUses || 0) < 2) {
+            s.seedUses = (s.seedUses || 0) + 1;
+            t.seeds = t.seeds || {};
+            t.seeds[s.id] = (t.seeds[s.id] || 0) + 1;
+            this.log(`🌱 ${s.name} 发动寄生，${t.name} 获得1个种子标记`);
+            s.lastAction = `🌱 寄生 ${s.seedUses}/2`;
+            t.lastAction = `🌱 种子 x${Object.values(t.seeds).reduce((a, b) => a + b, 0)}`;
+            this.updateAll();
+            return;
+        }
         t.hp -= n; 
         this.log(`💥 ${t.name} 受到 ${n}点伤害`);
         t.lastAction = `💥 扣血(-${n})`;
+        if (t.hero === 'TOM') this.queueSound('TOM');
+        Object.entries(t.seeds || {}).forEach(([ownerId, count]) => {
+            let owner = this.gameState.players.find(p => p.id === Number(ownerId));
+            if (owner && owner.alive && count > 0) {
+                owner.hp = Math.min(owner.maxHp, owner.hp + Number(count));
+                this.log(`🌱 ${owner.name} 因种子回复 ${count} 点体力`);
+            }
+        });
+        if (t.hero === 'DUOLA' && t.hp <= 0 && !t.timeMachineUsed) {
+            t.timeMachineUsed = true;
+            t.hand = [];
+            t.hp = Math.min(3, t.maxHp);
+            this.drawCards(t, 2);
+            this.log(`⏱️ ${t.name} 发动时光机，回复至${t.hp}血并摸两张牌`);
+            t.lastAction = '⏱️ 时光机';
+            return;
+        }
         if (t.hp <= 0) this.askForResponse('DYING', s?s.id:-1, t.id);
     },
     
     processDeath: function(v, s) {
+        if (v.hero === 'TOM') {
+            v.maxHp = Math.max(0, v.maxHp - 2);
+            if (v.maxHp > 0) {
+                v.hp = v.maxHp;
+                v.alive = true;
+                v.hand = [];
+                this.drawCards(v, 2);
+                this.queueSound('TOM');
+                this.log(`🧪 ${v.name} 发动不死，血量上限降至 ${v.maxHp} 并复活`);
+                v.lastAction = `🧪 不死(${v.maxHp})`;
+                this.updateAll();
+                return;
+            }
+        }
         v.alive = false; this.log(`🌙 ${v.name} 去喵星占座了`); v.lastAction = '🌙 去喵星';
-        this.playSound('DEATH');
+        this.queueSound('DEATH');
         this.showDeathBanner(v);
         
         if (this.gameState.aoeState) {
@@ -799,7 +1098,7 @@ const Game = {
             if (this.gameState.players[idx].alive) q.push(this.gameState.players[idx].id);
         }
         this.gameState.aoeState = { sourceId: source.id, type: type, queue: q };
-        this.playSound(type === 'aoe' ? 'HISS' : 'BARK');
+        this.queueSound(type === 'aoe' ? 'HISS' : 'BARK');
         this.processAOEQueue();
     },
 
@@ -874,12 +1173,18 @@ const Game = {
 
         let me = state.players.find(p => p.id === this.myId);
         if (!me) return;
+        if ((state.soundSeq || 0) > this.soundSeqSeen) {
+            this.soundSeqSeen = state.soundSeq || 0;
+            this.playSound(state.soundType);
+        }
 
         this.setTx('ui-my-role', me.role);
         this.setTx('ui-my-hero', HEROES[me.hero]?.name || '');
         this.setTx('ui-my-hp', `${"♥".repeat(Math.max(0, me.hp)) || "💀"} / ${me.maxHp}`);
         this.setTx('ui-my-hand-count', me.hand.length);
         this.setTx('ui-maodie-stack', me.hero === 'MAODIE' ? `🐾 耄耋哈气 ${me.hissStack || 0}/5` : '');
+        let mySeedTotal = Object.values(me.seeds || {}).reduce((a, b) => a + Number(b || 0), 0);
+        this.setTx('ui-seed-stack', mySeedTotal ? `🌱 种子 x${mySeedTotal}` : '');
         
         let ds = document.getElementById('drunk-status');
         if(ds) ds.style.display = me.isDrunk ? 'inline' : 'none';
@@ -916,9 +1221,13 @@ const Game = {
         });
 
         let handDiv = document.getElementById('hand-container'); handDiv.innerHTML = '';
+        this.renderHandSkillControls(handDiv, me, state);
         me.hand.forEach((c, idx) => {
             let el = document.createElement('div');
-            el.className = `card-hand ${idx === this.uiSelectedCardIdx ? 'selected' : ''} ${this.isDiscardPhase ? 'discard-mode' : ''}`;
+            let sunSelected = this.uiSunDiscard && this.uiSunDiscard.selected.includes(idx);
+            let sunLocked = this.uiSunDiscard && (this.uiSunDiscard.locked || [this.uiSunDiscard.cardIdx]).includes(idx);
+            let baibianDiscardPick = this.uiBaibianCardIdx !== null && this.uiBaibianCardIdx !== undefined && idx !== this.uiBaibianCardIdx;
+            el.className = `card-hand ${idx === this.uiSelectedCardIdx || sunSelected ? 'selected' : ''} ${this.isDiscardPhase || baibianDiscardPick || (this.uiSunDiscard && !sunLocked) ? 'discard-mode' : ''}`;
             el.style.backgroundImage = c.img ? `url('${c.img}')` : 'none';
             el.innerHTML = `<span class="card-suit ${this.escapeHTML(c.color)}">${this.escapeHTML(c.suit)}</span><div class="card-text-overlay">${this.escapeHTML(c.name)}</div>`;
             el.onpointerdown = () => {
@@ -960,7 +1269,13 @@ const Game = {
         }
 
         let panel = document.getElementById('response-panel');
-        if (state.pendingAction && state.pendingAction.targetId === this.myId) {
+        if (this.uiPrompt) {
+            this.setDisp('response-panel', 'block');
+            let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
+            this.setTx('resp-title', this.uiPrompt.title);
+            this.setTx('resp-msg', this.uiPrompt.msg);
+            this.uiPrompt.buttons.forEach(item => this.addBtn(btns, item.text, item.enable !== false, item.cls || 'primary', item.cb));
+        } else if (state.pendingAction && state.pendingAction.targetId === this.myId) {
             this.setDisp('response-panel', 'block');
             let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
             let copy = this.getResponseCopy(state.pendingAction, me);
@@ -978,6 +1293,9 @@ const Game = {
             else if (state.pendingAction.type === 'DYING') hasCard = me.hand.some(c => c.type === 'heal' || c.type === 'buff');
             else hasCard = true;
 
+            if (state.pendingAction.type === 'AOE_ASK' && me.hand.some(c => c.type === 'nullify')) {
+                this.addBtn(btns, '发动飞机耳，只抵消对自己', true, 'warn', () => Net.sendResp('NULLIFY'));
+            }
             this.addBtn(btns, yesText, hasCard, 'success', () => Net.sendResp('YES'));
             this.addBtn(btns, copy.no, true, 'danger', () => Net.sendResp('NO'));
         } else {
@@ -993,17 +1311,97 @@ const Game = {
                     if (me && me.hand.length > limit) Net.sendAction('DISCARD', { cardIdx: idx });
                     return;
                 }
-                if (this.uiSelectedCardIdx === idx) this.uiSelectedCardIdx = -1;
+                if (this.uiBaibianDeclared) {
+                    if (this.uiBaibianCardIdx === null || this.uiBaibianCardIdx === undefined) this.chooseBaibianHandCard(idx);
+                    else this.chooseBaibianDiscardCard(idx);
+                    return;
+                }
+                if (this.uiSunDiscard) {
+                    this.toggleSunDiscard(idx);
+                    return;
+                }
+                if (this.uiSelectedCardIdx === idx) { this.uiSelectedCardIdx = -1; this.uiVirtualPlay = null; }
                 else {
                     this.uiSelectedCardIdx = idx;
-                    if (['heal','buff','aoe','bark'].includes(c.type)) {
-                        if (confirm(`使用【${c.name}】?`)) {
-                            Net.sendAction('PLAY_CARD', { cardIdx: idx });
-                            this.uiSelectedCardIdx = -1;
-                        }
+                    if (['heal','buff','aoe','bark','sun'].includes(c.type)) {
+                        this.openUseCardPrompt(me, c, idx);
                     }
                 }
                 this.renderGame(state);
+    },
+
+    openUseCardPrompt: function(me, card, idx) {
+        if (!me || !card) return;
+        if (me.hero === 'DUOLA' && (card.type === 'heal' || card.type === 'buff')) {
+            let buttons = [];
+            if (card.type === 'heal') {
+                buttons.push({ text: '当作【冻干】使用', cls: 'success', enable: me.hp < me.maxHp, cb: () => this.confirmPlayCard(idx, { playAs: 'heal' }) });
+                buttons.push({ text: '当作【猫薄荷】使用', cls: 'warn', cb: () => this.confirmPlayCard(idx, { playAs: 'buff' }) });
+            } else {
+                buttons.push({ text: '当作【猫薄荷】使用', cls: 'warn', cb: () => this.confirmPlayCard(idx, { playAs: 'buff' }) });
+                buttons.push({ text: '当作【冻干】使用', cls: 'success', enable: me.hp < me.maxHp, cb: () => this.confirmPlayCard(idx, { playAs: 'heal' }) });
+            }
+            buttons.push({ text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } });
+            this.showPrompt('发动【铜锣】', `你要怎样使用【${card.name}】？`, buttons);
+            return;
+        }
+        if (card.type === 'sun') {
+            let buttons = [];
+            for (let i = 0; i <= me.hand.length - 1; i++) {
+                buttons.push({ text: `弃 ${i} 张`, cls: i >= 2 ? 'success' : 'primary', cb: () => this.startSunDiscardPick(idx, i) });
+            }
+            buttons.push({ text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } });
+            this.showPrompt('使用【午后阳光】', '请选择要弃置的牌数。弃至少两张会回复1点体力。', buttons);
+            return;
+        }
+        this.showPrompt('使用卡牌', `确定使用【${card.name}】吗？`, [
+            { text: '使用', cls: 'success', cb: () => this.confirmPlayCard(idx, {}) },
+            { text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } }
+        ]);
+    },
+
+    confirmPlayCard: function(idx, extra) {
+        this.uiPrompt = null;
+        Net.sendAction('PLAY_CARD', { cardIdx: idx, ...(extra || {}) });
+        this.uiSelectedCardIdx = -1;
+    },
+
+    startSunDiscardPick: function(cardIdx, count) {
+        this.uiPrompt = null;
+        if (count <= 0) {
+            this.confirmPlayCard(cardIdx, { discardIndexes: [] });
+            return;
+        }
+        this.uiSunDiscard = { cardIdx, count, selected: [] };
+        this.uiSelectedCardIdx = cardIdx;
+        this.showPrompt('选择弃牌', `请选择 ${count} 张要弃置的手牌。`, [
+            { text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSunDiscard = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } }
+        ]);
+    },
+
+    toggleSunDiscard: function(idx) {
+        if (!this.uiSunDiscard || (this.uiSunDiscard.locked || [this.uiSunDiscard.cardIdx]).includes(idx)) return;
+        let selected = this.uiSunDiscard.selected;
+        if (selected.includes(idx)) {
+            this.uiSunDiscard.selected = selected.filter(i => i !== idx);
+        } else if (selected.length < this.uiSunDiscard.count) {
+            selected.push(idx);
+        }
+        if (this.uiSunDiscard.selected.length >= this.uiSunDiscard.count) {
+            let data = this.uiSunDiscard;
+            this.uiSunDiscard = null;
+            this.uiPrompt = null;
+            if (data.baibian) {
+                Net.sendAction('BAIBIAN', { cardIdx: data.baibian.cardIdx, discardIdx: data.baibian.discardIdx, declaredName: '午后阳光', sunDiscardIndexes: data.selected });
+                this.uiSelectedCardIdx = -1;
+            } else {
+                this.confirmPlayCard(data.cardIdx, { discardIndexes: data.selected });
+            }
+        } else {
+            this.showPrompt('选择弃牌', `还需要选择 ${this.uiSunDiscard.count - this.uiSunDiscard.selected.length} 张要弃置的手牌。`, [
+                { text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSunDiscard = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } }
+            ]);
+        }
     },
 
     showCardDetail: function(card) {
@@ -1025,9 +1423,19 @@ const Game = {
             duel: '锦囊牌',
             dismantle: '锦囊牌',
             steal: '锦囊牌',
-            nullify: '锦囊牌'
+            nullify: '锦囊牌',
+            sun: '锦囊牌'
         };
         return labels[type] || type || '未知';
+    },
+
+    renderHandSkillControls: function(parent, me, state) {
+        if (me.hero !== 'TOM') return;
+        if (state.turnIdx !== this.myId || state.pendingAction || state.aoeState || state.discardingPlayerId === this.myId) return;
+        let slot = document.createElement('div');
+        slot.className = 'hand-skill-slot';
+        this.addBtn(slot, `百变${me.baibianUsed ? '已用' : ''}`, !me.baibianUsed && me.hand.length >= 2, 'warn', () => this.openBaibianChoice());
+        parent.appendChild(slot);
     },
 
     renderPlayerCard: function(p, container, isMain, isTurn) {
@@ -1037,7 +1445,14 @@ const Game = {
         if (!isMain) {
             el.onclick = () => {
                 if (this.gameState.turnIdx === this.myId && this.uiSelectedCardIdx !== -1 && this.gameState.discardingPlayerId !== this.myId) {
-                    Net.sendAction('PLAY_CARD', { cardIdx: this.uiSelectedCardIdx, targetId: p.id });
+                    if (this.uiVirtualPlay) {
+                        Net.sendAction('BAIBIAN', { ...this.uiVirtualPlay, targetId: p.id });
+                        this.uiVirtualPlay = null;
+                        this.uiPrompt = null;
+                        this.uiBaibianDeclared = null;
+                    } else {
+                        Net.sendAction('PLAY_CARD', { cardIdx: this.uiSelectedCardIdx, targetId: p.id });
+                    }
                     this.uiSelectedCardIdx = -1;
                 }
             };
@@ -1056,7 +1471,9 @@ const Game = {
         }
 
         let maodieBadge = p.hero === 'MAODIE' ? `<div class="maodie-stack">🐾 哈气 ${p.hissStack || 0}/5</div>` : '';
-        el.innerHTML = `${act}<div>${safeName} ${netStatus}</div><div class="role-badge">${safeRole}</div>${heroImg}<div class="hp-display">♥ ${Math.max(0, p.hp)}/${p.maxHp}</div>${maodieBadge}<div>🎴 ${p.hand.length}</div>`;
+        let seedTotal = Object.values(p.seeds || {}).reduce((a, b) => a + Number(b || 0), 0);
+        let seedBadge = seedTotal ? `<div class="seed-stack">🌱 种子 x${seedTotal}</div>` : '';
+        el.innerHTML = `${act}<div>${safeName} ${netStatus}</div><div class="role-badge">${safeRole}</div>${heroImg}<div class="hp-display">♥ ${Math.max(0, p.hp)}/${p.maxHp}</div>${maodieBadge}${seedBadge}<div>🎴 ${p.hand.length}</div>`;
         container.appendChild(el);
     },
 

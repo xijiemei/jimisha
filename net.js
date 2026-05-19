@@ -9,6 +9,8 @@ const Net = {
     suppressHostClose: false,
     MAX_PLAYERS: 5,
     targetPlayers: 5,
+    broadcastTimer: null,
+    broadcastDelay: 50,
     config: {
         debug: 1,
         config: {
@@ -31,7 +33,11 @@ const Net = {
         if (!this.ensurePeerReady()) return;
         this.resetSession();
 
-        let name = this.getPlayerName('房主');
+        let name = this.getPlayerName();
+        if (!name) {
+            this.setStatus('net-status', '请先填写自己的名字。', 'danger');
+            return;
+        }
         let roomName = this.getRoomName();
         let desiredId = this.getDesiredRoomId();
         if (!desiredId) desiredId = this.generateRoomId();
@@ -58,11 +64,15 @@ const Net = {
     joinRoom: function() {
         if (!this.ensurePeerReady()) return;
 
-        let name = this.getPlayerName('访客');
+        let name = this.getPlayerName();
+        if (!name) {
+            this.setStatus('net-status', '请先填写自己的名字。', 'danger');
+            return;
+        }
         let hostId = this.sanitizeRoomId(document.getElementById('mp-room-id').value || '');
         if (!hostId) {
             this.setStatus('net-status', '请输入猫窝 ID。', 'danger');
-            return alert('请输入猫窝 ID');
+            return;
         }
 
         this.resetSession();
@@ -123,13 +133,16 @@ const Net = {
             this.acceptHeroSelection(c, p, d.heroId);
         } else if (d.type === 'ACT') {
             let gamePlayer = Game.gameState.players.find(gp => gp.peerId === c.peer);
-            if (gamePlayer && Game.handleActionInternal(gamePlayer, d.payload || {})) this.broadcast();
+            if (gamePlayer && Game.handleActionInternal(gamePlayer, d.payload || {})) {
+                this.scheduleBroadcast();
+                return;
+            }
             else this.send(c, { type: 'NOTICE', message: '现在还不能这样出牌。', tone: 'warn' });
         } else if (d.type === 'RESP') {
             let gamePlayer = Game.gameState.players.find(gp => gp.peerId === c.peer);
             if (gamePlayer) {
                 Game.resolveResponse(gamePlayer.id, d.choice);
-                this.broadcast();
+                this.scheduleBroadcast();
             }
         }
     },
@@ -147,7 +160,6 @@ const Net = {
         } else if (d.type === 'JOIN_DENIED') {
             let reason = d.reason || '加入失败。';
             this.setStatus('net-status', reason, 'danger');
-            alert(reason);
             let oldConn = this.conn;
             this.conn = null;
             this.suppressHostClose = true;
@@ -402,8 +414,16 @@ const Net = {
             });
             Game.showScreen('screen-game');
             Game.initGameLogic(ps);
-            this.broadcast();
         }
+    },
+
+    scheduleBroadcast: function() {
+        if (!this.isHost) return;
+        if (this.broadcastTimer) return;
+        this.broadcastTimer = setTimeout(() => {
+            this.broadcastTimer = null;
+            this.broadcast();
+        }, this.broadcastDelay);
     },
 
     broadcast: function() {
@@ -425,7 +445,7 @@ const Net = {
             Game.handleActionInternal(me, { type, ...(payload || {}) });
         } else if (this.isHost) {
             let me = Game.gameState.players.find(p => p.id === Game.myId);
-            if (Game.handleActionInternal(me, { type, ...(payload || {}) })) this.broadcast();
+            if (Game.handleActionInternal(me, { type, ...(payload || {}) })) this.scheduleBroadcast();
         } else if (this.conn && this.conn.open) {
             this.conn.send({ type: 'ACT', payload: { type, ...(payload || {}) } });
         } else {
@@ -438,7 +458,7 @@ const Net = {
             Game.resolveResponse(Game.myId, choice);
         } else if (this.isHost) {
             Game.resolveResponse(Game.myId, choice);
-            this.broadcast();
+            this.scheduleBroadcast();
         } else if (this.conn && this.conn.open) {
             this.conn.send({ type: 'RESP', choice });
         } else {
@@ -539,6 +559,10 @@ const Net = {
         this.connections.forEach(c => { try { c.close(); } catch (e) {} });
         let oldConn = this.conn;
         this.conn = null;
+        if (this.broadcastTimer) {
+            clearTimeout(this.broadcastTimer);
+            this.broadcastTimer = null;
+        }
         if (oldConn) { try { oldConn.close(); } catch (e) {} }
         if (this.peer && !this.peer.destroyed) { try { this.peer.destroy(); } catch (e) {} }
         this.peer = null;
@@ -577,7 +601,7 @@ const Net = {
 
     getPlayerName: function(fallback) {
         let raw = document.getElementById('mp-username')?.value;
-        return this.sanitizeName(raw, fallback);
+        return this.sanitizeName(raw, fallback || '');
     },
 
     getRoomName: function() {
