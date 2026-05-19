@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>基米杀 v1.1</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <div id="audio-preload" style="display:none;"></div>
+
+    <div id="response-panel" style="display:none;">
+        <h3 id="resp-title">需要响应</h3>
+        <p id="resp-msg">内容</p>
+        <div id="resp-btns"></div>
+    </div>
+    
+    <div id="card-detail-popup" class="card-popup" style="display:none;" onclick="Game.closePopups()">
+        <div class="popup-content" onclick="event.stopPropagation()">
+            <h3 id="card-popup-name"></h3>
+            <p id="card-popup-type"></p>
+            <p id="card-popup-desc"></p>
+        </div>
+    </div>
+    
+    <div id="hero-detail-popup" class="card-popup" style="display:none;">
+        <div class="popup-content">
+            <h3 id="hero-popup-name"></h3>
+            <p id="hero-popup-title"></p>
+            <p id="hero-popup-desc"></p>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>🐱 基米杀 <small style="font-size:0.6em">v1.1</small></h2>
+
+        <div id="screen-menu" class="screen active">
+            <button class="btn btn-primary" onclick="Game.startSPSetup()">🤖 单机吸猫</button>
+            <button class="btn btn-success" onclick="Net.setupMP()">🌍 联机吸猫</button>
+            <div style="margin-top:20px; font-size:12px; color:#888;">Chrome / Edge 体验最佳</div>
+        </div>
+
+        <div id="screen-select" class="screen">
+            <button class="btn-back" onclick="location.reload()">🏠 溜了</button>
+            <h3>选择猫将</h3>
+            <p class="status-text">已准备: <span id="ready-count-disp">0</span> / 5</p>
+            <div class="hero-grid" id="hero-list"></div>
+            <button id="btn-confirm-hero" class="btn btn-primary" onclick="Game.confirmHero()" disabled>确认领养</button>
+            <p id="wait-msg" style="color:#666; font-size:12px;"></p>
+        </div>
+
+        <div id="screen-mp-login" class="screen">
+            <button class="btn-back" onclick="location.reload()">🏠 返回</button>
+            <h3>🌍 喵星中转站</h3>
+            <input type="text" id="mp-username" placeholder="给自己起个喵名" maxlength="8" value="基米">
+            <br><br>
+            <input type="text" id="mp-room-name" placeholder="房间名字，例如：周五猫局" maxlength="12">
+            <br><br>
+            <input type="text" id="mp-custom-room-id" placeholder="自定义猫窝ID，可不填" maxlength="18" style="width:40%">
+            <button class="btn btn-primary" onclick="Net.createRoom()">建立猫窝</button>
+            <br><br>
+            <input type="text" id="mp-room-id" placeholder="输入猫窝ID" style="width:40%">
+            <button class="btn btn-success" onclick="Net.joinRoom()">钻进猫窝</button>
+            <p id="net-status" class="net-status">不填猫窝 ID 会自动生成短 ID，也可以自己设置。</p>
+        </div>
+        
+        <div id="screen-mp-lobby" class="screen">
+            <button class="btn-back" onclick="location.reload()">🏠 离开</button>
+            <h3 id="lobby-room-name" class="room-name-title">猫窝</h3>
+            <h3>猫窝 ID: <span id="lobby-room-id" style="user-select:text; color:#2196F3;">...</span>
+                <button id="btn-copy-room" class="btn btn-primary btn-sm" onclick="Net.copyRoomId()" style="display:none;">复制</button>
+            </h3>
+            <p id="lobby-status" class="net-status"></p>
+            <p>猫咪列表 (<span id="player-count">1</span>/5):</p>
+            <div class="lobby-grid" id="lobby-list"></div>
+            <div id="host-controls" style="display:none; margin-top:20px;">
+                <button class="btn btn-warn" onclick="Net.addBot()">+ 机器猫</button>
+                <button class="btn btn-danger" onclick="Net.removeBot()">- 机器猫</button>
+                <button id="btn-mp-start" class="btn btn-primary" onclick="Net.hostStartSelect()" disabled>开始吸猫 (需5位)</button>
+            </div>
+            <p id="guest-msg" style="font-size:12px; color:#666; display:none;">等待房主发车喵...</p>
+        </div>
+
+        <div id="screen-game" class="screen">
+            <button class="btn-back" style="position:fixed; top:10px; left:10px; z-index:100;" onclick="if(confirm('确定要逃跑吗喵？')) location.reload()">🏠</button>
+            
+            <div class="top-bar">
+                <div class="my-status-box">
+                    <div>
+                        身份: <span id="ui-my-role" class="role-text">---</span> | 
+                        猫将: <strong id="ui-my-hero">---</strong>
+                    </div>
+                    <div style="margin-top:4px;">
+                        状态: <span id="ui-my-hp" class="hp-text">❤️❤️❤️</span> 
+                        <span style="font-size:11px; color:#666; margin-left:5px;">(爪牌: <span id="ui-my-hand-count">0</span>)</span>
+                        <span id="drunk-status" style="display:none; color:purple; font-weight:bold;">🌿上头</span>
+                    </div>
+                </div>
+                <div class="music-controls">
+                    <button class="btn btn-warn btn-sm" onclick="Game.toggleBGM()">🎵 <span id="bgm-status">播放</span></button>
+                    <button class="btn btn-warn btn-sm" onclick="Game.nextBGM()">⏭️</button>
+                    <span id="bgm-title" style="font-size:10px; margin-left: 5px;">BGM</span>
+                </div>
+                <button id="btn-end-turn" class="btn btn-primary" style="padding:6px 12px;" onclick="Game.handleEndTurnClick()">结束回合</button>
+            </div>
+
+            <div id="phase-bar" style="display:none;">⚠️ 爪子满了：请扔掉 <span id="discard-count">0</span> 张牌喵！</div>
+
+            <div id="game-board" class="game-board-ring"></div>
+            <div id="game-log" class="log-box"></div>
+            <div id="hand-container" class="hand-container"></div>
+        </div>
+    </div>
+
+    <script src="data.js"></script>
+    <script src="net.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
