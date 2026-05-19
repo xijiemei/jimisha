@@ -1,5 +1,6 @@
 /* style.css */
-body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #eef2f5; margin: 0; padding: 0; user-select: none; }
+body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: radial-gradient(circle at 12% 8%, rgba(255,214,102,0.28), transparent 24%), radial-gradient(circle at 88% 14%, rgba(76,175,80,0.18), transparent 22%), #eef2f5; margin: 0; padding: 0; user-select: none; }
+body::before { content: "🐾 😼 ✨ 🐱"; position: fixed; right: 18px; bottom: 156px; opacity: 0.16; font-size: 42px; letter-spacing: 10px; pointer-events: none; z-index: 1; transform: rotate(-8deg); }
 .container { max-width: 1000px; margin: 0 auto; padding: 10px; text-align: center; }
 .screen { display: none; animation: fadeIn 0.3s; }
 .active { display: block; }
@@ -11,6 +12,7 @@ body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-
 .btn-primary { background: #2196F3; } .btn-success { background: #4CAF50; } .btn-danger { background: #F44336; } .btn-warn { background: #FF9800; }
 .btn-primary:hover:not(:disabled) { background: #0b7dda; } .btn-success:hover:not(:disabled) { background: #45a049; }
 input { padding: 8px; width: 60%; border: 1px solid #ddd; border-radius: 4px; }
+.match-size-select { width: 60%; max-width: 320px; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background: white; color: #333; }
 .net-status { min-height: 18px; margin: 12px auto 0; font-size: 12px; color: #607D8B; }
 .net-status.success { color: #2E7D32; }
 .net-status.warn { color: #F57C00; }
@@ -26,6 +28,17 @@ input { padding: 8px; width: 60%; border: 1px solid #ddd; border-radius: 4px; }
 #response-panel h3 { margin-top: 0; color: #FFEB3B; }
 #response-panel p { font-size: 15px; margin-bottom: 20px; color: #ddd; }
 @keyframes slideUp { from { transform: translate(-50%, -20%); opacity: 0; } to { transform: translate(-50%, -50%); opacity: 1; } }
+
+#death-banner { position: fixed; inset: 18% 0 auto 0; margin: auto; width: min(720px, calc(100vw - 24px)); padding: 22px 18px; border-radius: 8px; background: linear-gradient(135deg, rgba(20,20,20,0.96), rgba(81,45,168,0.94)); color: white; text-align: center; box-shadow: 0 18px 44px rgba(0,0,0,0.35); z-index: 1200; transform: translateY(-30px) scale(0.96); opacity: 0; pointer-events: none; transition: opacity 0.22s, transform 0.22s; }
+#death-banner.show { opacity: 1; transform: translateY(0) scale(1); }
+.death-title { color: #FFD54F; font-weight: 800; font-size: 16px; margin-bottom: 8px; }
+.death-name { font-size: clamp(24px, 5vw, 44px); font-weight: 900; }
+#judge-banner { position: fixed; top: 18px; left: 50%; transform: translate(-50%, -20px); width: min(560px, calc(100vw - 28px)); padding: 14px 16px; border-radius: 8px; background: rgba(255,255,255,0.98); border: 2px solid #FFB74D; box-shadow: 0 12px 28px rgba(0,0,0,0.18); text-align: center; z-index: 1210; opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; }
+#judge-banner.show { opacity: 1; transform: translate(-50%, 0); }
+#judge-banner.success { border-color: #66BB6A; }
+#judge-banner.fail { border-color: #EF5350; }
+.judge-title { color: #E65100; font-weight: 900; font-size: 16px; }
+.judge-msg { color: #37474F; font-size: 13px; margin-top: 4px; }
 
 .top-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); margin-bottom: 10px; }
 .my-status-box { text-align: left; font-size: 13px; line-height: 1.4; }
@@ -44,6 +57,9 @@ input { padding: 8px; width: 60%; border: 1px solid #ddd; border-radius: 4px; }
 .tag-bot { background: #E1F5FE; color: #0277BD; }
 .lobby-avatar { font-size: 24px; margin-bottom: 5px; }
 .lobby-name { font-weight: bold; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.online-dot { display: inline-flex; align-items: center; gap: 3px; margin-left: 3px; padding: 1px 4px; border-radius: 6px; font-size: 9px; vertical-align: middle; }
+.online-dot.online { background: #C8E6C9; color: #2E7D32; }
+.online-dot.offline { background: #FFCDD2; color: #B71C1C; }
 
 .hero-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; margin-bottom: 20px; }
 .hero-card { width: 150px; background: white; border: 3px solid #ddd; border-radius: 10px; padding: 10px; cursor: pointer; text-align: left; transition: 0.2s; position: relative; color: #333; display: flex; flex-direction: column; align-items: center; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
@@ -59,6 +75,7 @@ input { padding: 8px; width: 60%; border: 1px solid #ddd; border-radius: 4px; }
 .player-pos.pos-left-mid { top: 60%; left: 10%; transform: translate(-50%, -50%); } 
 .player-pos.pos-top-left { top: 30%; left: 30%; transform: translate(-50%, -50%); } 
 .player-pos.pos-top-right { top: 30%; left: 70%; transform: translate(-50%, -50%); } 
+.player-pos.pos-top-center { top: 26%; left: 50%; transform: translate(-50%, -50%); }
 .player-pos.pos-right-mid { top: 60%; right: 10%; transform: translate(50%, -50%); }
 
 @media (max-width: 600px) {
@@ -67,6 +84,7 @@ input { padding: 8px; width: 60%; border: 1px solid #ddd; border-radius: 4px; }
     .player-pos.pos-right-mid { right: 5% !important; }
     .player-pos.pos-top-left { left: 15% !important; }
     .player-pos.pos-top-right { left: 85% !important; }
+    .player-pos.pos-top-center { top: 24%; left: 50% !important; }
     .hand-container { height: 110px; } 
 }
 
@@ -83,6 +101,8 @@ input { padding: 8px; width: 60%; border: 1px solid #ddd; border-radius: 4px; }
 .card-player.dying { border: 4px solid #F44336; box-shadow: 0 0 20px #F44336; animation: shake 0.5s infinite; }
 .role-badge { font-size: 10px; padding: 2px 4px; background: #eee; border-radius: 4px; text-align: center; }
 .hp-display { color: #E91E63; font-weight: bold; margin-top: 4px; }
+.maodie-stack { display: inline-block; margin-left: 6px; padding: 2px 6px; border-radius: 6px; background: #FFF3E0; color: #E65100; font-size: 10px; font-weight: 800; border: 1px solid #FFB74D; }
+.card-player .maodie-stack { margin: 2px auto 0; }
 .turn-pointer { position: absolute; top: -15px; left: 50%; transform: translateX(-50%); font-size: 18px; color: #FF9800; animation: bounce 1s infinite alternate; }
 
 /* 内联样式已在 JS 中强制覆盖，这里仅作备用 */
@@ -108,3 +128,27 @@ input { padding: 8px; width: 60%; border: 1px solid #ddd; border-radius: 4px; }
 .btn-back { background: #607D8B; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-bottom: 10px; }
 .btn-back:hover { background: #455A64; }
 #drunk-status { animation: pulse 1s infinite; }
+
+@media (max-width: 600px) {
+    body::before { font-size: 28px; right: 6px; bottom: 128px; }
+    .container { padding: 8px 6px 132px; }
+    .top-bar { align-items: stretch; gap: 6px; flex-wrap: wrap; padding: 8px; }
+    .my-status-box { flex: 1 1 100%; font-size: 12px; }
+    .music-controls { flex: 1 1 auto; min-width: 0; }
+    #bgm-title { display: none; }
+    #btn-end-turn { flex: 0 0 auto; }
+    #response-panel { top: 42%; width: calc(100vw - 36px); min-width: 0; padding: 18px 12px; }
+    .game-board-ring { transform: none; height: 300px; margin: 8px auto 14px auto; }
+    .player-pos.pos-left-mid { top: 62%; left: 18% !important; }
+    .player-pos.pos-right-mid { top: 62%; right: 18% !important; }
+    .player-pos.pos-top-left { top: 28%; left: 28% !important; }
+    .player-pos.pos-top-right { top: 28%; left: 72% !important; }
+    .player-pos.pos-top-center { top: 24%; left: 50% !important; }
+    .card-player { width: 92px; height: 148px; font-size: 10px; padding: 5px; }
+    .card-player-img { height: 58px; }
+    .last-action { top: -26px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    .log-box { position: relative; height: 82px; width: calc(100% - 18px); margin: 0 auto 120px auto; z-index: 45; }
+    .hand-container { height: 104px; align-items: flex-start; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); z-index: 60; }
+    .card-hand { min-width: 66px; height: 88px; background-size: 68%; }
+    .card-text-overlay { font-size: 10px; }
+}

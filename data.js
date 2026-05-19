@@ -19,7 +19,7 @@ const HEROES = {
     MAODIE: { id: 'MAODIE', name: '耄耋', title: '圆头', hp: 4, desc: '【圆头】: 每次受伤最多1点。【连杀】: 可无限出【哈气】，5连杀后自扣1血（1血时不扣）。', img: "assets/heroes/maodie.png" },
     BANANA: { id: 'BANANA', name: '香蕉猫', title: '爱哭鬼', hp: 3, desc: '【哭哭】: 被【哈气】时判定黑色无效。手牌上限+1。', img: "assets/heroes/banana.png" },
     HUH: { id: 'HUH', name: '疑惑猫', title: '智慧眼神', hp: 3, desc: '【疑惑】: 仅在被【哈气】指定为目标时，可随机弃1张牌使该【哈气】无效。', img: "assets/heroes/huh.png" },
-    LOWPOLY: { id: 'LOWPOLY', name: '没建模', title: '没经济', hp: 4, desc: '【摸鱼】: 开局3牌。空手牌时不能被【哈气】指定。', img: "assets/heroes/lowpoly.png" }
+    LOWPOLY: { id: 'LOWPOLY', name: '丑橘', title: '没经济', hp: 4, desc: '【摸鱼】: 开局3牌。空手牌时不能被【哈气】指定。', img: "assets/heroes/lowpoly.png" }
 };
 
 const BGM_LIST = [

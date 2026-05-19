@@ -1,6 +1,7 @@
 const Game = {
     mode: 'NONE',
     myId: 0,
+    spPlayerCount: 5,
     selectedHeroId: null,
     uiState: {},
     uiSelectedCardIdx: -1,
@@ -8,7 +9,7 @@ const Game = {
     uiLongPressTimer: null,
     uiSuppressNextClick: false,
     isDiscardPhase: false,
-    gameState: { players: [], deck: [], turnIdx: 0, logs: [], started: false, pendingAction: null, aoeState: null, gameOver: null },
+    gameState: { players: [], deck: [], turnIdx: 0, logs: [], started: false, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null },
     
     currentBGM: new Audio(),
     bgmIndex: 0,
@@ -104,8 +105,33 @@ const Game = {
         else if (type === 'HAPPY') audio.src = 'assets/happy.mp3';
         else if (type === 'HUH') audio.src = 'assets/huh.mp3';
         else if (type === 'BANANA') audio.src = 'assets/banana.mp3';
+        else if (type === 'DEATH') audio.src = 'assets/death-oh-no.mp3';
         else return;
-        audio.volume = 0.6; audio.play().catch(()=>{});
+        audio.volume = 0.6; audio.play().catch(()=>{
+            if (type === 'DEATH') this.playFallbackDeathSound();
+        });
+    },
+    playFallbackDeathSound: function() {
+        try {
+            let Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            let ctx = new Ctx();
+            let gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.22, ctx.currentTime + 0.03);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.7);
+            gain.connect(ctx.destination);
+            [520, 330].forEach((freq, i) => {
+                let osc = ctx.createOscillator();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.28);
+                osc.frequency.exponentialRampToValueAtTime(freq * 0.72, ctx.currentTime + i * 0.28 + 0.25);
+                osc.connect(gain);
+                osc.start(ctx.currentTime + i * 0.28);
+                osc.stop(ctx.currentTime + i * 0.28 + 0.32);
+            });
+            setTimeout(() => ctx.close().catch(()=>{}), 900);
+        } catch (e) {}
     },
 
     // === 辅助 ===
@@ -120,6 +146,84 @@ const Game = {
             d.innerHTML = `<div>&gt; ${this.escapeHTML(msg)}</div>` + d.innerHTML;
             this.gameState.logs.push(msg);
         }
+    },
+    getPlayerName: function(id) {
+        let p = this.gameState.players.find(x => x.id === id);
+        return p ? p.name : '神秘哈基米';
+    },
+    getResponseCopy: function(action, me) {
+        let sourceName = this.getPlayerName(action.sourceId);
+        let cardName = action.cardName || '牌';
+        const copies = {
+            AOE_ASK: {
+                title: '全场哈基米警报',
+                msg: action.promptMsg || `${sourceName} 放了大范围猫猫波，轮到你接招喵。`,
+                yes: `掏出「${cardName}」顶住`,
+                no: '躺平挨一下喵'
+            },
+            DODGE: {
+                title: '有猫在哈你',
+                msg: `${sourceName} 对你哈气了，快启用「脊背龙模式」把毛炸起来。`,
+                yes: '启用脊背龙模式',
+                no: '来不及了，扣血喵'
+            },
+            DUEL_HISS: {
+                title: '哈气单挑',
+                msg: `${sourceName} 盯着你互哈，谁先没气势谁掉毛。`,
+                yes: '回哈一口',
+                no: '认怂掉毛'
+            },
+            SKILL_HUH_HISS: {
+                title: '疑惑哈基米上线',
+                msg: '对面哈气太离谱了，要不要丢 1 张牌装作没听懂？',
+                yes: '歪头：啊？',
+                no: '正常接招'
+            },
+            SKILL_BANANA: {
+                title: '香蕉猫要哭了',
+                msg: '要不要发动哭哭判定？黑色就当这口哈气没发生喵。',
+                yes: '开哭哭判定',
+                no: '忍住不哭'
+            },
+            NULLIFY: {
+                title: '飞机耳竖起来',
+                msg: `${sourceName} 打出「${action.cardName || '锦囊'}」，要不要用「飞机耳」装作没听见？`,
+                yes: '发动飞机耳',
+                no: '让它发生喵'
+            },
+            SKILL_HAPPY_START: {
+                title: '开心猫伸懒腰',
+                msg: '少摸 1 张牌，换 1 点血量，今天也要开心喵？',
+                yes: '开心回血',
+                no: '多摸牌'
+            },
+            DYING: {
+                title: '紧急吸猫救援',
+                msg: `${me?.name || '这只哈基米'} 快没电了，能不能掏出「冻干」或「猫薄荷」续一口？`,
+                yes: '喂一口续命',
+                no: '送去喵星'
+            }
+        };
+        return copies[action.type] || { title: '哈基米需要回应', msg: action.promptMsg || '轮到你回应喵。', yes: '回应', no: '不回应' };
+    },
+    showDeathBanner: function(player) {
+        let banner = document.getElementById('death-banner');
+        if (!banner || !player) return;
+        banner.innerHTML = `<div class="death-title">喵星快讯</div><div class="death-name">${this.escapeHTML(player.name)} 去喵星占座了</div>`;
+        banner.classList.remove('show');
+        void banner.offsetWidth;
+        banner.classList.add('show');
+        setTimeout(() => banner.classList.remove('show'), 2600);
+    },
+    showJudgeBanner: function(title, message, tone) {
+        let banner = document.getElementById('judge-banner');
+        if (!banner) return;
+        banner.className = tone || '';
+        banner.innerHTML = `<div class="judge-title">${this.escapeHTML(title)}</div><div class="judge-msg">${this.escapeHTML(message)}</div>`;
+        banner.classList.remove('show');
+        void banner.offsetWidth;
+        banner.classList.add('show');
+        setTimeout(() => banner.classList.remove('show'), 2400);
     },
     createDeck: function() {
         let deck = [];
@@ -144,30 +248,71 @@ const Game = {
         let dist = Math.abs(idx1 - idx2);
         return Math.min(dist, alive.length - dist);
     },
+    getHandLimit: function(p) {
+        if (!p) return 0;
+        return Math.max(0, p.hp) + (p.hero === 'BANANA' ? 1 : 0);
+    },
+    getTrickTargets: function(source, card, target) {
+        if (!card) return [];
+        if (card.type === 'aoe' || card.type === 'bark') return this.gameState.players.filter(p => p.alive && p.id !== source.id);
+        return target && target.alive ? [target] : [];
+    },
+    findNullifyResponder: function(source, targets) {
+        let ids = (targets || []).map(p => p.id);
+        return this.gameState.players.find(p => p.alive && p.id !== source.id && ids.includes(p.id) && p.hand.some(c => c.type === 'nullify')) || null;
+    },
+    shouldAskNullify: function(card) {
+        return !!card && ['aoe', 'bark', 'duel', 'dismantle', 'steal'].includes(card.type);
+    },
+    askForNullify: function(source, card, target, effect) {
+        let responder = this.findNullifyResponder(source, this.getTrickTargets(source, card, target));
+        if (!responder) return false;
+        this.askForResponse('NULLIFY', source.id, responder.id, { cardName: card.name, effect });
+        return true;
+    },
+    continueNullifiedEffect: function(effect) {
+        if (!effect) return;
+        let source = this.gameState.players.find(p => p.id === effect.sourceId);
+        let target = this.gameState.players.find(p => p.id === effect.targetId);
+        let card = effect.card;
+        if (!source || !card) return;
+        this.applyCardEffect(source, card, target);
+    },
 
     // === 初始化 ===
-    startSPSetup: function() { this.mode = 'SP'; this.myId = 0; this.renderHeroSelect(); },
+    startSPSetup: function(count) {
+        this.mode = 'SP';
+        this.myId = 0;
+        this.spPlayerCount = count === 2 ? 2 : 5;
+        this.renderHeroSelect();
+    },
+    startSPFromMenu: function() {
+        let el = document.getElementById('sp-match-size');
+        this.startSPSetup(Number(el ? el.value : 5));
+    },
     startSPGame: function() {
         this.showScreen('screen-game');
         let ps = [this.createPlayer(0, `玩家`, false)];
         ps[0].hero = this.selectedHeroId;
         let ks = Object.keys(HEROES).filter(k => k !== this.selectedHeroId);
-        for (let i = 1; i < 5; i++) {
+        for (let i = 1; i < this.spPlayerCount; i++) {
             let h = ks[Math.floor(Math.random() * ks.length)];
             ks = ks.filter(x => x !== h);
             let b = this.createPlayer(i, `Bot${i}`, true); b.hero = h; ps.push(b);
         }
         this.initGameLogic(ps);
     },
-    createPlayer: function(id, name, isBot) { return { id, name, isBot, role: '', hero: '', hp: 0, maxHp: 0, hand: [], alive: true, hasHissed: false, hissStack: 0, cryingUsed: false, isDrunk: false, lastAction: '' }; },
+    createPlayer: function(id, name, isBot) { return { id, name, isBot, role: '', hero: '', hp: 0, maxHp: 0, hand: [], alive: true, hasHissed: false, hissStack: 0, botAttackCount: 0, cryingUsed: false, isDrunk: false, lastAction: '' }; },
 
     initGameLogic: function(players) {
-        this.gameState = { players, deck: this.createDeck(), turnIdx: 0, logs: [], started: true, pendingAction: null, aoeState: null, gameOver: null };
-        let roles = ['喵皇', '护驾喵', '反骨喵', '反骨喵', '老六'].sort(() => Math.random() - 0.5);
+        this.gameState = { players, deck: this.createDeck(), turnIdx: 0, logs: [], started: true, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null };
+        let roles = players.length === 2
+            ? ['喵皇', '反骨喵'].sort(() => Math.random() - 0.5)
+            : ['喵皇', '护驾喵', '反骨喵', '反骨喵', '老六'].sort(() => Math.random() - 0.5);
         players.forEach((p, i) => {
             p.role = roles[i];
             let baseHp = HEROES[p.hero] ? HEROES[p.hero].hp : 3;
-            if (p.role === '喵皇') baseHp += 1;
+            if (p.role === '喵皇' && players.length !== 2) baseHp += 1;
             p.hp = baseHp; p.maxHp = baseHp;
             if (p.role === '喵皇') this.gameState.turnIdx = i;
             let drawCount = (p.hero === 'LOWPOLY') ? 3 : 4;
@@ -183,7 +328,7 @@ const Game = {
         
         if (!p.alive) { this.nextTurn(); return; }
         this.log(`👉 轮到 [${p.name}] 了喵`);
-        p.hasHissed = false; p.cryingUsed = false; p.isDrunk = false;
+        p.hasHissed = false; p.cryingUsed = false; p.isDrunk = false; p.botAttackCount = 0;
 
         if (p.hero === 'HAPPY' && p.hp < p.maxHp) {
             if (p.isBot) {
@@ -221,6 +366,11 @@ const Game = {
 
     botAction: function(bot) {
         if (this.gameState.pendingAction || this.gameState.aoeState || this.gameState.turnIdx !== bot.id || !bot.alive) return;
+
+        if (this.gameState.discardingPlayerId === bot.id) {
+            this.handleActionInternal(bot, {type:'DISCARD', cardIdx: 0});
+            return;
+        }
         
         let actionTaken = false;
         // 1. 回血
@@ -243,7 +393,8 @@ const Game = {
         // 4. 杀
         if (!actionTaken) {
             let kI = bot.hand.findIndex(c => c.type === 'attack');
-            if (kI > -1 && (!bot.hasHissed || bot.hero === 'MAODIE')) {
+            let canBotAttack = (!bot.hasHissed || bot.hero === 'MAODIE') && !(this.gameState.players.length === 2 && bot.hero !== 'MAODIE' && bot.botAttackCount >= 1);
+            if (kI > -1 && canBotAttack) {
                 let target = this.getBotEnemy(bot);
                 if(target) actionTaken = this.handleActionInternal(bot, {type:'PLAY_CARD', cardIdx: kI, targetId: target.id});
             }
@@ -251,12 +402,6 @@ const Game = {
 
         if (actionTaken) return; // 行动过，等待下一次 checkBotAutoPlay
 
-        // 5. 弃牌
-        let limit = bot.hp + (bot.hero === 'BANANA' ? 1 : 0);
-        if (bot.hand.length > limit) {
-            this.handleActionInternal(bot, {type:'DISCARD', cardIdx: 0});
-            return; 
-        }
         this.handleActionInternal(bot, {type:'END_TURN'});
     },
 
@@ -299,20 +444,49 @@ const Game = {
         let done = false;
 
         if (action.type === 'END_TURN') { 
+            let limit = this.getHandLimit(p);
+            if (p.hand.length > limit) {
+                this.gameState.discardingPlayerId = p.id;
+                if (p.id === this.myId) this.isDiscardPhase = true;
+                this.uiSelectedCardIdx = -1;
+                this.updateAll();
+                return true;
+            }
+            this.gameState.discardingPlayerId = null;
+            if (p.id === this.myId) this.isDiscardPhase = false;
             p.isDrunk = false; 
             this.nextTurn(); return true; 
         }
         
         if (action.type === 'DISCARD') {
+            if (this.gameState.discardingPlayerId !== p.id) return false;
+            let limit = this.getHandLimit(p);
+            if (p.hand.length <= limit) {
+                this.gameState.discardingPlayerId = null;
+                if (p.id === this.myId) this.isDiscardPhase = false;
+                p.isDrunk = false;
+                this.nextTurn();
+                return true;
+            }
             if(p.hand[action.cardIdx]) {
                 let c = p.hand.splice(action.cardIdx, 1)[0];
                 this.log(`${p.name} 弃牌`);
-                p.lastAction = `🗑️ ${c.name}`; this.updateAll(); return true;
+                p.lastAction = `🗑️ ${c.name}`;
+                if (p.hand.length <= limit) {
+                    this.gameState.discardingPlayerId = null;
+                    if (p.id === this.myId) this.isDiscardPhase = false;
+                    p.isDrunk = false;
+                    this.updateAll();
+                    this.nextTurn();
+                    return true;
+                }
+                this.updateAll(); return true;
             }
             return false;
         }
 
         if (action.type === 'PLAY_CARD') {
+            if (this.gameState.discardingPlayerId === p.id) return false;
             let cardIdx = Number(action.cardIdx);
             if (!Number.isInteger(cardIdx) || cardIdx < 0 || cardIdx >= p.hand.length) return false;
             let card = p.hand[cardIdx]; if (!card) return false;
@@ -336,7 +510,7 @@ const Game = {
             }
 
             if (target && target.hero === 'LOWPOLY' && target.hand.length === 0 && card.type === 'attack') {
-                if (p.id === this.myId) alert("对方没建模（空手牌），无法指定！");
+                if (p.id === this.myId) alert("对方丑橘（空手牌），无法指定！");
                 return false;
             }
 
@@ -362,48 +536,55 @@ const Game = {
             }
 
             if (done) {
-                if (card.type === 'attack') {
-                    this.playSound('HISS');
-                    let dmg = p.isDrunk ? 2 : 1;
-                    if (p.isDrunk) { p.isDrunk = false; this.log("💨 酒劲过了"); }
-                    
-                    if (p.hero === 'MAODIE') { 
-                        p.hissStack++; 
-                        if(p.hissStack >= 5) { 
-                            if (p.hp > 1) { this.resolveDamage(p, 1, p); this.log("🦁 耄耋连杀累得掉血！"); }
-                            p.hissStack=0; 
-                        }
-                    } else p.hasHissed = true;
-                    
-                    this.log(`⚔️ ${p.name} 对 ${target.name} 哈气`);
-                    if (target.hero === 'HUH' && target.hand.length > 0) {
-                        this.askForResponse('SKILL_HUH_HISS', p.id, target.id, {damage: dmg});
-                    } else if (target.hero === 'BANANA' && !target.cryingUsed) {
-                        this.askForResponse('SKILL_BANANA', p.id, target.id, {damage: dmg}); 
-                    } else {
-                        this.askForResponse('DODGE', p.id, target.id, {damage: dmg});
-                    }
-                } 
-                else if (card.type === 'buff') { p.isDrunk = true; this.log(`🌿 ${p.name} 吸猫薄荷`); p.lastAction = `🌿 吸猫薄荷`; }
-                else if (card.type === 'aoe' || card.type === 'bark') { 
-                    this.log(`📢 ${p.name} 放AOE`); this.startAOE(p, card.type); 
-                }
-                else if (card.type === 'dismantle' || card.type === 'steal') {
-                    if (target.hand.length > 0) {
-                        let r = Math.floor(Math.random()*target.hand.length);
-                        if (card.type === 'steal') p.hand.push(target.hand.splice(r,1)[0]);
-                        else target.hand.splice(r,1);
-                        this.log(`🖐 ${p.name} 对 ${target.name} ${card.name}成功`);
-                    }
-                }
-                else if (card.type === 'duel') {
-                    this.log(`⚔️ ${p.name} 决斗 ${target.name}`);
-                    this.askForResponse('DUEL_HISS', p.id, target.id, { extraSourceId: p.id });
-                }
+                if (this.shouldAskNullify(card) && this.askForNullify(p, card, target, { sourceId: p.id, targetId: target ? target.id : null, card })) return true;
+                this.applyCardEffect(p, card, target);
                 this.updateAll(); return true;
             }
         }
         return false;
+    },
+
+    applyCardEffect: function(p, card, target) {
+        if (card.type === 'attack') {
+            this.playSound('HISS');
+            let dmg = p.isDrunk ? 2 : 1;
+            if (p.isDrunk) { p.isDrunk = false; this.log("💨 猫薄荷上头，哈气+1"); }
+            
+            if (p.hero === 'MAODIE') { 
+                p.hissStack++; 
+                if(p.hissStack >= 5) { 
+                    if (p.hp > 1) { this.resolveDamage(p, 1, p); this.log("🦁 耄耋连哈累得掉血！"); }
+                    p.hissStack=0; 
+                }
+            }
+            if (p.isBot) p.botAttackCount = (p.botAttackCount || 0) + 1;
+            if (p.hero !== 'MAODIE') p.hasHissed = true;
+            
+            this.log(`⚔️ ${p.name} 对 ${target.name} 哈气`);
+            if (target.hero === 'HUH' && target.hand.length > 0) {
+                this.askForResponse('SKILL_HUH_HISS', p.id, target.id, {damage: dmg});
+            } else if (target.hero === 'BANANA' && !target.cryingUsed) {
+                this.askForResponse('SKILL_BANANA', p.id, target.id, {damage: dmg}); 
+            } else {
+                this.askForResponse('DODGE', p.id, target.id, {damage: dmg});
+            }
+        } 
+        else if (card.type === 'buff') { p.isDrunk = true; this.log(`🌿 ${p.name} 吸猫薄荷`); p.lastAction = `🌿 吸猫薄荷`; }
+        else if (card.type === 'aoe' || card.type === 'bark') { 
+            this.log(`📢 ${p.name} 放AOE`); this.startAOE(p, card.type); 
+        }
+        else if (card.type === 'dismantle' || card.type === 'steal') {
+            if (target.hand.length > 0) {
+                let r = Math.floor(Math.random()*target.hand.length);
+                if (card.type === 'steal') p.hand.push(target.hand.splice(r,1)[0]);
+                else target.hand.splice(r,1);
+                this.log(`🖐 ${p.name} 对 ${target.name} ${card.name}成功`);
+            }
+        }
+        else if (card.type === 'duel') {
+            this.log(`⚔️ ${p.name} 决斗 ${target.name}`);
+            this.askForResponse('DUEL_HISS', p.id, target.id, { extraSourceId: p.id });
+        }
     },
 
     resolveResponse: function(pid, choice) {
@@ -416,8 +597,25 @@ const Game = {
         let s = this.gameState.players.find(p => p.id === pending.sourceId);
         if (!t) return;
 
+        if (pending.type === 'NULLIFY') {
+            this.gameState.pendingAction = null;
+            let idx = t.hand.findIndex(c => c.type === 'nullify');
+            if (choice === 'YES' && idx > -1) {
+                t.hand.splice(idx, 1);
+                this.log(`✈️ ${t.name} 飞机耳发动，${pending.cardName || '锦囊'} 被装作没听见`);
+                t.lastAction = '✈️ 飞机耳';
+                this.updateAll();
+                if (s && s.id === this.gameState.turnIdx) this.resumeTurn(s);
+            } else {
+                this.continueNullifiedEffect(pending.effect);
+                this.updateAll();
+            }
+            return;
+        }
+
         if (pending.type === 'AOE_ASK') {
             let req = pending.cardType;
+            this.gameState.pendingAction = null;
             if (choice === 'YES') {
                 let idx = t.hand.findIndex(c => c.type === req);
                 if (idx > -1) { 
@@ -432,7 +630,6 @@ const Game = {
             // 关键修复：AOE 队列必须强制流转，不能因为濒死或其他原因停滞
             if (this.gameState.pendingAction && this.gameState.pendingAction.type === 'DYING') return;
 
-            this.gameState.pendingAction = null;
             if (this.gameState.aoeState) {
                 this.gameState.aoeState.queue.shift(); // 移除当前
                 setTimeout(() => this.processAOEQueue(), 500); // 延时递归下一个
@@ -460,10 +657,13 @@ const Game = {
             if (choice === 'YES') {
                 let j = this.getJudgment(); this.log(`🍌 判定: ${j.color}`);
                 if (j.color === 'black') { 
+                    this.showJudgeBanner('香蕉猫哭哭成功', '黑爪爪落地，这口哈气被喵喵擦掉了！', 'success');
                     this.log(`🍌 ${t.name} 哭哭成功，免疫伤害`); this.playSound('BANANA'); t.lastAction='😭 哭哭成功'; 
                     this.gameState.pendingAction = null; this.updateAll();
                     if (s && s.id === this.gameState.turnIdx) this.resumeTurn(s);
                     return; 
+                } else {
+                    this.showJudgeBanner('香蕉猫哭哭失败', '红爪爪翻出来了，没哭赢喵。快决定要不要启用脊背龙模式！', 'fail');
                 }
             }
             let dmg = pending.damage || 1;
@@ -495,6 +695,7 @@ const Game = {
                 let dmg = pending.damage || 1;
                 this.resolveDamage(t, dmg, s);
             }
+            if (this.gameState.pendingAction && this.gameState.pendingAction.type === 'DYING') return;
             this.updateAll();
             if (s && s.id === this.gameState.turnIdx) this.resumeTurn(s);
             return;
@@ -548,10 +749,13 @@ const Game = {
     },
     
     processDeath: function(v, s) {
-        v.alive = false; this.log(`💀 ${v.name} 阵亡`); v.lastAction = '💀 挂了';
+        v.alive = false; this.log(`🌙 ${v.name} 去喵星占座了`); v.lastAction = '🌙 去喵星';
+        this.playSound('DEATH');
+        this.showDeathBanner(v);
         
         if (this.gameState.aoeState) {
-            this.gameState.aoeState.queue = this.gameState.aoeState.queue.filter(id => id !== v.id);
+            let current = this.gameState.aoeState.queue[0];
+            this.gameState.aoeState.queue = this.gameState.aoeState.queue.filter((id, idx) => idx === 0 ? id === current : id !== v.id);
         }
         
         if (this.gameState.pendingAction && this.gameState.pendingAction.targetId === v.id) this.gameState.pendingAction = null;
@@ -637,6 +841,8 @@ const Game = {
         this.selectedHeroId = null;
         let confirmBtn = document.getElementById('btn-confirm-hero');
         if (confirmBtn) confirmBtn.disabled = true;
+        this.setTx('ready-target-count', this.mode === 'SP' ? this.spPlayerCount : Net.targetPlayers);
+        this.setTx('ready-count-disp', 0);
         this.setTx('wait-msg', '');
         let c = document.getElementById('hero-list'); c.innerHTML = '';
         Object.values(HEROES).forEach(h => {
@@ -656,9 +862,7 @@ const Game = {
     handleEndTurnClick: function() {
         let me = this.gameState.players.find(p => p.id === this.myId);
         if (!me || me.isBot) return;
-        let limit = me.hp + (me.hero === 'BANANA' ? 1 : 0);
-        if (me.hand.length > limit) { this.isDiscardPhase = true; this.renderGame(this.gameState); }
-        else { this.isDiscardPhase = false; Net.sendAction('END_TURN', {}); }
+        Net.sendAction('END_TURN', {});
     },
 
     renderGame: function(state) {
@@ -673,17 +877,20 @@ const Game = {
 
         this.setTx('ui-my-role', me.role);
         this.setTx('ui-my-hero', HEROES[me.hero]?.name || '');
-        this.setTx('ui-my-hp', "♥".repeat(Math.max(0, me.hp)) || "💀");
+        this.setTx('ui-my-hp', `${"♥".repeat(Math.max(0, me.hp)) || "💀"} / ${me.maxHp}`);
         this.setTx('ui-my-hand-count', me.hand.length);
+        this.setTx('ui-maodie-stack', me.hero === 'MAODIE' ? `🐾 耄耋哈气 ${me.hissStack || 0}/5` : '');
         
         let ds = document.getElementById('drunk-status');
         if(ds) ds.style.display = me.isDrunk ? 'inline' : 'none';
 
-        let limit = me.hp + (me.hero === 'BANANA' ? 1 : 0);
+        let limit = this.getHandLimit(me);
         let excess = me.hand.length - limit;
         let phaseBar = document.getElementById('phase-bar');
+        let isMyDiscardTurn = state.discardingPlayerId === this.myId && state.turnIdx === this.myId && excess > 0;
+        this.isDiscardPhase = isMyDiscardTurn;
         
-        if (state.turnIdx === this.myId && this.isDiscardPhase && excess > 0) {
+        if (isMyDiscardTurn) {
             this.setDisp('phase-bar', 'block');
             this.setTx('discard-count', excess);
             let tip = `爪子拿不下了！快扔掉 ${excess} 张牌喵！`;
@@ -696,7 +903,7 @@ const Game = {
         const pCount = state.players.length;
         const sortedIds = [];
         for (let i = 1; i < pCount; i++) sortedIds.push((this.myId + i) % pCount);
-        const positions = ['pos-left-mid', 'pos-top-left', 'pos-top-right', 'pos-right-mid'];
+        const positions = pCount === 2 ? ['pos-top-center'] : ['pos-left-mid', 'pos-top-left', 'pos-top-right', 'pos-right-mid'];
 
         sortedIds.forEach((pid, idx) => {
             let p = state.players.find(x => x.id === pid);
@@ -711,7 +918,7 @@ const Game = {
         let handDiv = document.getElementById('hand-container'); handDiv.innerHTML = '';
         me.hand.forEach((c, idx) => {
             let el = document.createElement('div');
-            el.className = `card-hand ${idx === this.uiSelectedCardIdx ? 'selected' : ''}`;
+            el.className = `card-hand ${idx === this.uiSelectedCardIdx ? 'selected' : ''} ${this.isDiscardPhase ? 'discard-mode' : ''}`;
             el.style.backgroundImage = c.img ? `url('${c.img}')` : 'none';
             el.innerHTML = `<span class="card-suit ${this.escapeHTML(c.color)}">${this.escapeHTML(c.suit)}</span><div class="card-text-overlay">${this.escapeHTML(c.name)}</div>`;
             el.onpointerdown = () => {
@@ -756,24 +963,23 @@ const Game = {
         if (state.pendingAction && state.pendingAction.targetId === this.myId) {
             this.setDisp('response-panel', 'block');
             let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
-            this.setTx('resp-msg', state.pendingAction.promptMsg || "请选择");
+            let copy = this.getResponseCopy(state.pendingAction, me);
+            this.setTx('resp-title', copy.title);
+            this.setTx('resp-msg', copy.msg);
             
-            let yesText = "✅ 确认";
-            if (state.pendingAction.type === 'AOE_ASK') yesText = `🃏 出【${state.pendingAction.cardName}】`;
-            if (state.pendingAction.type === 'DODGE') yesText = "⚡ 出【棘背龙】";
-            if (state.pendingAction.type === 'DUEL_HISS') yesText = "⚔️ 出【哈气】";
-            if (state.pendingAction.type === 'SKILL_HUH_HISS') yesText = "❓ 弃牌无效";
+            let yesText = copy.yes;
 
             let hasCard = false;
             if (state.pendingAction.type === 'DODGE') hasCard = me.hand.some(c => c.type === 'defense');
             else if (state.pendingAction.type === 'DUEL_HISS') hasCard = me.hand.some(c => c.type === 'attack');
             else if (state.pendingAction.type === 'AOE_ASK') hasCard = me.hand.some(c => c.type === state.pendingAction.cardType);
             else if (state.pendingAction.type === 'SKILL_HUH_HISS') hasCard = me.hand.length > 0;
+            else if (state.pendingAction.type === 'NULLIFY') hasCard = me.hand.some(c => c.type === 'nullify');
             else if (state.pendingAction.type === 'DYING') hasCard = me.hand.some(c => c.type === 'heal' || c.type === 'buff');
             else hasCard = true;
 
             this.addBtn(btns, yesText, hasCard, 'success', () => Net.sendResp('YES'));
-            this.addBtn(btns, "❌ 拒绝/扣血", true, 'danger', () => Net.sendResp('NO'));
+            this.addBtn(btns, copy.no, true, 'danger', () => Net.sendResp('NO'));
         } else {
             this.setDisp('response-panel', 'none');
         }
@@ -781,7 +987,12 @@ const Game = {
 
     handleHandCardClick: function(c, idx, state) {
                 if (state.turnIdx !== this.myId) return;
-                if (this.isDiscardPhase) { Net.sendAction('DISCARD', { cardIdx: idx }); return; }
+                let me = state.players.find(p => p.id === this.myId);
+                let limit = this.getHandLimit(me);
+                if (state.discardingPlayerId === this.myId) {
+                    if (me && me.hand.length > limit) Net.sendAction('DISCARD', { cardIdx: idx });
+                    return;
+                }
                 if (this.uiSelectedCardIdx === idx) this.uiSelectedCardIdx = -1;
                 else {
                     this.uiSelectedCardIdx = idx;
@@ -825,7 +1036,7 @@ const Game = {
         
         if (!isMain) {
             el.onclick = () => {
-                if (this.gameState.turnIdx === this.myId && this.uiSelectedCardIdx !== -1 && !this.isDiscardPhase) {
+                if (this.gameState.turnIdx === this.myId && this.uiSelectedCardIdx !== -1 && this.gameState.discardingPlayerId !== this.myId) {
                     Net.sendAction('PLAY_CARD', { cardIdx: this.uiSelectedCardIdx, targetId: p.id });
                     this.uiSelectedCardIdx = -1;
                 }
@@ -836,6 +1047,7 @@ const Game = {
         let safeName = this.escapeHTML(p.name);
         let safeRole = this.escapeHTML(p.role === '喵皇' || !p.alive ? p.role : '???');
         let safeAction = this.escapeHTML(p.lastAction);
+        let netStatus = this.mode === 'MP' && !p.isBot ? `<span class="online-dot ${p.disconnected ? 'offline' : 'online'}">${p.disconnected ? '离线' : '在线'}</span>` : '';
         // 强制内联样式，修复非房主看不见黑框问题
         let act = p.lastAction ? `<div class="last-action" style="position:absolute; top:-35px; left:50%; transform:translate(-50%,0); background:rgba(0,0,0,0.9); color:#FFEB3B; padding:4px 8px; border-radius:6px; font-weight:bold; font-size:12px; border:1px solid orange; white-space:nowrap; z-index:999;">${safeAction}</div>` : '';
         
@@ -843,7 +1055,8 @@ const Game = {
             act = `<div class="last-action" style="position:absolute; top:-35px; left:50%; transform:translate(-50%,0); background:orange; color:white; padding:4px 8px; border-radius:6px; font-weight:bold; font-size:12px; z-index:999;">⏳ 等待响应...</div>`;
         }
 
-        el.innerHTML = `${act}<div>${safeName}</div><div class="role-badge">${safeRole}</div>${heroImg}<div class="hp-display">♥ ${Math.max(0, p.hp)}</div><div>🎴 ${p.hand.length}</div>`;
+        let maodieBadge = p.hero === 'MAODIE' ? `<div class="maodie-stack">🐾 哈气 ${p.hissStack || 0}/5</div>` : '';
+        el.innerHTML = `${act}<div>${safeName} ${netStatus}</div><div class="role-badge">${safeRole}</div>${heroImg}<div class="hp-display">♥ ${Math.max(0, p.hp)}/${p.maxHp}</div>${maodieBadge}<div>🎴 ${p.hand.length}</div>`;
         container.appendChild(el);
     },
 

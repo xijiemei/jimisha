@@ -8,6 +8,7 @@ const Net = {
     roomName: '',
     suppressHostClose: false,
     MAX_PLAYERS: 5,
+    targetPlayers: 5,
     config: {
         debug: 1,
         config: {
@@ -42,6 +43,7 @@ const Net = {
             this.isHost = true;
             this.roomId = id;
             this.roomName = roomName;
+            this.targetPlayers = this.getTargetPlayers();
             Game.mode = 'MP';
             Game.myId = 0;
             this.mpPlayers = [{ id: 0, name, peerId: id, ready: false, isHost: true, online: true }];
@@ -159,6 +161,7 @@ const Net = {
         } else if (d.type === 'LOBBY') {
             this.mpPlayers = d.players || [];
             this.roomName = d.roomName || this.roomName || '猫窝';
+            this.targetPlayers = d.targetPlayers || this.targetPlayers || 5;
             if (d.roomId) this.roomId = d.roomId;
             this.setLobbyRoomInfo(this.roomId || '已连接', this.roomName, false);
             let active = document.querySelector('.screen.active')?.id;
@@ -190,7 +193,7 @@ const Net = {
             this.send(c, { type: 'JOIN_DENIED', reason: '这局已经开始了，请下一局再加入。' });
             return;
         }
-        if (this.mpPlayers.length >= this.MAX_PLAYERS && !this.mpPlayers.some(p => p.peerId === c.peer)) {
+        if (this.mpPlayers.length >= this.targetPlayers && !this.mpPlayers.some(p => p.peerId === c.peer)) {
             this.send(c, { type: 'JOIN_DENIED', reason: '猫窝已经满员了。' });
             return;
         }
@@ -270,7 +273,13 @@ const Net = {
         if (this.isHost) {
             document.getElementById('host-controls').style.display = 'block';
             document.getElementById('guest-msg').style.display = 'none';
-            document.getElementById('btn-mp-start').disabled = this.mpPlayers.length !== this.MAX_PLAYERS;
+            let addBotBtn = document.querySelector('#host-controls .btn-warn');
+            let removeBotBtn = document.querySelector('#host-controls .btn-danger');
+            if (addBotBtn) addBotBtn.style.display = this.targetPlayers === 2 ? 'none' : 'inline-block';
+            if (removeBotBtn) removeBotBtn.style.display = this.targetPlayers === 2 ? 'none' : 'inline-block';
+            let startBtn = document.getElementById('btn-mp-start');
+            startBtn.disabled = this.mpPlayers.length !== this.targetPlayers;
+            startBtn.innerText = `开始吸猫(需${this.targetPlayers}位)`;
             this.broadcastLobby();
         } else {
             document.getElementById('host-controls').style.display = 'none';
@@ -288,7 +297,7 @@ const Net = {
 
             let tag = document.createElement('div');
             tag.className = `lobby-tag ${p.online === false ? 'tag-offline' : (p.isBot ? 'tag-bot' : 'tag-online')}`;
-            tag.innerText = p.online === false ? '托管' : (p.isBot ? 'Bot' : (p.isHost ? '房主' : '玩家'));
+            tag.innerText = p.online === false ? '离线' : (p.isBot ? 'Bot' : '在线');
 
             let avatar = document.createElement('div');
             avatar.className = 'lobby-avatar';
@@ -304,10 +313,16 @@ const Net = {
             g.appendChild(card);
         });
         document.getElementById('player-count').innerText = this.mpPlayers.length;
+        let target = document.getElementById('target-count');
+        if (target) target.innerText = this.targetPlayers;
     },
 
     addBot: function() {
-        if (!this.isHost || this.mpPlayers.length >= this.MAX_PLAYERS) return;
+        if (this.targetPlayers === 2) {
+            this.setStatus('lobby-status', '双猫对哈只等真人猫友，不塞机器猫。', 'warn');
+            return;
+        }
+        if (!this.isHost || this.mpPlayers.length >= this.targetPlayers) return;
         let ks = this.getAvailableHeroes();
         let randHero = ks[Math.floor(Math.random() * ks.length)];
         let botNo = this.mpPlayers.filter(p => p.isBot).length + 1;
@@ -337,8 +352,8 @@ const Net = {
 
     hostStartSelect: function() {
         if (!this.isHost) return;
-        if (this.mpPlayers.length !== this.MAX_PLAYERS) {
-            this.setStatus('lobby-status', '需要 5 位玩家或机器猫才能开始。', 'danger');
+        if (this.mpPlayers.length !== this.targetPlayers) {
+            this.setStatus('lobby-status', `需要 ${this.targetPlayers} 位玩家或机器猫才能开始。`, 'danger');
             return;
         }
 
@@ -372,10 +387,12 @@ const Net = {
     updateSelectCountUI: function(c) {
         let el = document.getElementById('ready-count-disp');
         if (el) el.innerText = c;
+        let target = document.getElementById('ready-target-count');
+        if (target) target.innerText = this.targetPlayers;
     },
 
     checkReady: function() {
-        if (!this.isHost || this.mpPlayers.length !== this.MAX_PLAYERS) return;
+        if (!this.isHost || this.mpPlayers.length !== this.targetPlayers) return;
         if (this.mpPlayers.every(p => p.ready && this.isValidHero(p.hero))) {
             let ps = this.mpPlayers.map(p => {
                 let pl = Game.createPlayer(p.id, p.name, !!p.isBot);
@@ -399,7 +416,7 @@ const Net = {
     },
 
     broadcastLobby: function() {
-        this.sendToGuests({ type: 'LOBBY', players: this.clone(this.mpPlayers), roomId: this.roomId, roomName: this.roomName });
+        this.sendToGuests({ type: 'LOBBY', players: this.clone(this.mpPlayers), roomId: this.roomId, roomName: this.roomName, targetPlayers: this.targetPlayers });
     },
 
     sendAction: function(type, payload) {
@@ -530,6 +547,7 @@ const Net = {
         this.mpPlayers = [];
         this.roomId = '';
         this.roomName = '';
+        this.targetPlayers = 5;
         setTimeout(() => { this.suppressHostClose = false; }, 100);
     },
 
@@ -549,6 +567,12 @@ const Net = {
 
     isValidHero: function(heroId) {
         return !!(heroId && HEROES[heroId]);
+    },
+
+    getTargetPlayers: function() {
+        let el = document.getElementById('mp-match-size');
+        let n = Number(el ? el.value : 5);
+        return n === 2 ? 2 : 5;
     },
 
     getPlayerName: function(fallback) {

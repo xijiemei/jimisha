@@ -9,6 +9,8 @@
 </head>
 <body>
     <div id="audio-preload" style="display:none;"></div>
+    <div id="death-banner" aria-live="polite"></div>
+    <div id="judge-banner" aria-live="polite"></div>
 
     <div id="response-panel" style="display:none;">
         <h3 id="resp-title">需要响应</h3>
@@ -36,7 +38,12 @@
         <h2>🐱 基米杀 <small style="font-size:0.6em">v1.1</small></h2>
 
         <div id="screen-menu" class="screen active">
-            <button class="btn btn-primary" onclick="Game.startSPSetup()">🤖 单机吸猫</button>
+            <select id="sp-match-size" class="match-size-select">
+                <option value="5">5人猫窝局</option>
+                <option value="2">1v1 双猫对哈</option>
+            </select>
+            <br>
+            <button class="btn btn-primary" onclick="Game.startSPFromMenu()">🤖 单机吸猫</button>
             <button class="btn btn-success" onclick="Net.setupMP()">🌍 联机吸猫</button>
             <div style="margin-top:20px; font-size:12px; color:#888;">Chrome / Edge 体验最佳</div>
         </div>
@@ -44,7 +51,7 @@
         <div id="screen-select" class="screen">
             <button class="btn-back" onclick="location.reload()">🏠 溜了</button>
             <h3>选择猫将</h3>
-            <p class="status-text">已准备: <span id="ready-count-disp">0</span> / 5</p>
+            <p class="status-text">已准备: <span id="ready-count-disp">0</span> / <span id="ready-target-count">5</span></p>
             <div class="hero-grid" id="hero-list"></div>
             <button id="btn-confirm-hero" class="btn btn-primary" onclick="Game.confirmHero()" disabled>确认领养</button>
             <p id="wait-msg" style="color:#666; font-size:12px;"></p>
@@ -56,6 +63,11 @@
             <input type="text" id="mp-username" placeholder="给自己起个喵名" maxlength="8" value="基米">
             <br><br>
             <input type="text" id="mp-room-name" placeholder="房间名字，例如：周五猫局" maxlength="12">
+            <br><br>
+            <select id="mp-match-size" class="match-size-select">
+                <option value="5">5人猫窝局</option>
+                <option value="2">双猫对哈</option>
+            </select>
             <br><br>
             <input type="text" id="mp-custom-room-id" placeholder="自定义猫窝ID，可不填" maxlength="18" style="width:40%">
             <button class="btn btn-primary" onclick="Net.createRoom()">建立猫窝</button>
@@ -72,7 +84,7 @@
                 <button id="btn-copy-room" class="btn btn-primary btn-sm" onclick="Net.copyRoomId()" style="display:none;">复制</button>
             </h3>
             <p id="lobby-status" class="net-status"></p>
-            <p>猫咪列表 (<span id="player-count">1</span>/5):</p>
+            <p>猫咪列表 (<span id="player-count">1</span>/<span id="target-count">5</span>):</p>
             <div class="lobby-grid" id="lobby-list"></div>
             <div id="host-controls" style="display:none; margin-top:20px;">
                 <button class="btn btn-warn" onclick="Net.addBot()">+ 机器猫</button>
@@ -95,6 +107,7 @@
                         状态: <span id="ui-my-hp" class="hp-text">❤️❤️❤️</span> 
                         <span style="font-size:11px; color:#666; margin-left:5px;">(爪牌: <span id="ui-my-hand-count">0</span>)</span>
                         <span id="drunk-status" style="display:none; color:purple; font-weight:bold;">🌿上头</span>
+                        <span id="ui-maodie-stack" class="maodie-stack"></span>
                     </div>
                 </div>
                 <div class="music-controls">
