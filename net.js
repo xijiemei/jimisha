@@ -9,6 +9,7 @@ const Net = {
     suppressHostClose: false,
     MAX_PLAYERS: 5,
     targetPlayers: 5,
+    battleMode: 'classic',
     broadcastTimer: null,
     broadcastDelay: 50,
     config: {
@@ -49,7 +50,9 @@ const Net = {
             this.isHost = true;
             this.roomId = id;
             this.roomName = roomName;
+            this.battleMode = this.getBattleMode();
             this.targetPlayers = this.getTargetPlayers();
+            Game.battleMode = this.battleMode;
             Game.mode = 'MP';
             Game.myId = 0;
             this.mpPlayers = [{ id: 0, name, peerId: id, ready: false, isHost: true, online: true }];
@@ -133,6 +136,10 @@ const Net = {
             this.acceptHeroSelection(c, p, d.heroId);
         } else if (d.type === 'ACT') {
             let gamePlayer = Game.gameState.players.find(gp => gp.peerId === c.peer);
+            if (Game.gameState.teamMode) {
+                let team = (Game.gameState.teams || []).find(t => t.peerId === c.peer);
+                gamePlayer = Game.gameState.players.find(gp => gp.id === team?.activeId) || Game.gameState.players.find(gp => gp.teamId === team?.id) || gamePlayer;
+            }
             if (gamePlayer && Game.handleActionInternal(gamePlayer, d.payload || {})) {
                 this.scheduleBroadcast();
                 return;
@@ -140,6 +147,11 @@ const Net = {
             else this.send(c, { type: 'NOTICE', message: '现在还不能这样出牌。', tone: 'warn' });
         } else if (d.type === 'RESP') {
             let gamePlayer = Game.gameState.players.find(gp => gp.peerId === c.peer);
+            if (Game.gameState.teamMode && Game.gameState.pendingAction) {
+                let team = (Game.gameState.teams || []).find(t => t.peerId === c.peer);
+                let target = Game.gameState.players.find(gp => gp.id === Game.gameState.pendingAction.targetId);
+                if (team && target && target.teamId === team.id) gamePlayer = target;
+            }
             if (gamePlayer) {
                 Game.resolveResponse(gamePlayer.id, d.choice);
                 this.scheduleBroadcast();
@@ -174,6 +186,8 @@ const Net = {
             this.mpPlayers = d.players || [];
             this.roomName = d.roomName || this.roomName || '猫窝';
             this.targetPlayers = d.targetPlayers || this.targetPlayers || 5;
+            this.battleMode = d.battleMode || 'classic';
+            Game.battleMode = this.battleMode;
             if (d.roomId) this.roomId = d.roomId;
             this.setLobbyRoomInfo(this.roomId || '已连接', this.roomName, false);
             let active = document.querySelector('.screen.active')?.id;
@@ -185,7 +199,10 @@ const Net = {
             if (me) Game.myId = me.id;
         } else if (d.type === 'GOTO_SELECT') {
             Game.mode = 'MP';
+            this.battleMode = d.battleMode || this.battleMode || 'classic';
+            Game.battleMode = this.battleMode;
             Game.selectedHeroId = null;
+            Game.selectedHeroIds = [];
             Game.renderHeroSelect();
             this.updateSelectCountUI(d.count || 0);
             this.setHeroWaitMessage('选好猫将后，等待所有玩家准备。', false);
@@ -194,8 +211,13 @@ const Net = {
         } else if (d.type === 'GAME') {
             Game.gameState = d.state;
             Game.showScreen('screen-game');
-            let me = Game.gameState.players.find(p => this.peer && p.peerId === this.peer.id);
-            if (me) Game.myId = me.id;
+            if (Game.gameState.teamMode) {
+                let team = (Game.gameState.teams || []).find(t => this.peer && t.peerId === this.peer.id);
+                if (team) Game.myTeamId = team.id;
+            } else {
+                let me = Game.gameState.players.find(p => this.peer && p.peerId === this.peer.id);
+                if (me) Game.myId = me.id;
+            }
             Game.renderGame(Game.gameState);
         }
     },
@@ -228,8 +250,8 @@ const Net = {
     },
 
     acceptHeroSelection: function(c, p, heroId) {
-        if (!this.isValidHero(heroId)) {
-            this.send(c, { type: 'HERO_REJECT', reason: '这个猫将不存在，换一只吧。' });
+        if (!this.isValidHeroSelection(heroId)) {
+            this.send(c, { type: 'HERO_REJECT', reason: this.battleMode === 'team3' ? '请选择三只不同猫将。' : '这个猫将不存在，换一只吧。' });
             return;
         }
         if (this.isHeroTaken(heroId, p.peerId)) {
@@ -364,6 +386,8 @@ const Net = {
 
     hostStartSelect: function() {
         if (!this.isHost) return;
+        this.battleMode = this.getBattleMode();
+        Game.battleMode = this.battleMode;
         if (this.mpPlayers.length !== this.targetPlayers) {
             this.setStatus('lobby-status', `需要 ${this.targetPlayers} 位玩家或机器猫才能开始。`, 'danger');
             return;
@@ -377,10 +401,12 @@ const Net = {
             }
         });
 
-        this.sendToGuests({ type: 'GOTO_SELECT', count: this.getReadyCount() });
+        this.sendToGuests({ type: 'GOTO_SELECT', count: this.getReadyCount(), battleMode: this.battleMode });
         Game.mode = 'MP';
         Game.myId = 0;
+        Game.myTeamId = 0;
         Game.selectedHeroId = null;
+        Game.selectedHeroIds = [];
         Game.renderHeroSelect();
         this.updateSelectCount();
     },
@@ -405,15 +431,19 @@ const Net = {
 
     checkReady: function() {
         if (!this.isHost || this.mpPlayers.length !== this.targetPlayers) return;
-        if (this.mpPlayers.every(p => p.ready && this.isValidHero(p.hero))) {
-            let ps = this.mpPlayers.map(p => {
-                let pl = Game.createPlayer(p.id, p.name, !!p.isBot);
-                pl.peerId = p.peerId;
-                pl.hero = p.hero;
-                return pl;
-            });
+        if (this.mpPlayers.every(p => p.ready && this.isValidHeroSelection(p.hero))) {
+            let ps = this.battleMode === 'team3'
+                ? Game.createTeamBattlePlayers(this.mpPlayers)
+                : this.mpPlayers.map(p => {
+                    let pl = Game.createPlayer(p.id, p.name, !!p.isBot);
+                    pl.peerId = p.peerId;
+                    pl.hero = p.hero;
+                    return pl;
+                });
             Game.showScreen('screen-game');
-            Game.initGameLogic(ps);
+            if (this.battleMode === 'team3') Game.initTeamBattleLogic(ps.players, ps.teams);
+            else if (this.battleMode === 'explosion') Game.initExplosionLogic(ps);
+            else Game.initGameLogic(ps);
         }
     },
 
@@ -436,15 +466,15 @@ const Net = {
     },
 
     broadcastLobby: function() {
-        this.sendToGuests({ type: 'LOBBY', players: this.clone(this.mpPlayers), roomId: this.roomId, roomName: this.roomName, targetPlayers: this.targetPlayers });
+        this.sendToGuests({ type: 'LOBBY', players: this.clone(this.mpPlayers), roomId: this.roomId, roomName: this.roomName, targetPlayers: this.targetPlayers, battleMode: this.battleMode });
     },
 
     sendAction: function(type, payload) {
         if (Game.mode === 'SP') {
-            let me = Game.gameState.players.find(p => p.id === Game.myId);
+            let me = Game.getControlledPlayer ? Game.getControlledPlayer(Game.gameState) : Game.gameState.players.find(p => p.id === Game.myId);
             Game.handleActionInternal(me, { type, ...(payload || {}) });
         } else if (this.isHost) {
-            let me = Game.gameState.players.find(p => p.id === Game.myId);
+            let me = Game.getControlledPlayer ? Game.getControlledPlayer(Game.gameState) : Game.gameState.players.find(p => p.id === Game.myId);
             if (Game.handleActionInternal(me, { type, ...(payload || {}) })) this.scheduleBroadcast();
         } else if (this.conn && this.conn.open) {
             this.conn.send({ type: 'ACT', payload: { type, ...(payload || {}) } });
@@ -467,8 +497,8 @@ const Net = {
     },
 
     sendSelectHero: function(heroId) {
-        if (!this.isValidHero(heroId)) {
-            this.setHeroWaitMessage('请选择一个猫将。', true);
+        if (!this.isValidHeroSelection(heroId)) {
+            this.setHeroWaitMessage(this.battleMode === 'team3' ? '请选择三只猫将。' : '请选择一个猫将。', true);
             return;
         }
 
@@ -492,12 +522,20 @@ const Net = {
 
     sanitizeStateForPeer: function(state, peerId) {
         let s = this.clone(state);
+        if (s.teamMode && Array.isArray(s.teams)) {
+            s.teams.forEach(t => {
+                if (t.peerId !== peerId) {
+                    let handCount = Array.isArray(t.hand) ? t.hand.length : 0;
+                    t.hand = Array.from({ length: handCount }, () => ({ name: '???', type: 'unknown', img: '', suit: '', color: '' }));
+                }
+            });
+        }
         s.players.forEach(p => {
             let isSelf = p.peerId === peerId;
             if (!isSelf) {
                 let handCount = Array.isArray(p.hand) ? p.hand.length : 0;
                 p.hand = Array.from({ length: handCount }, () => ({ name: '???', type: 'unknown', img: '', suit: '', color: '' }));
-                if (p.alive && p.role !== '喵皇') p.role = '???';
+                if (!s.teamMode && s.battleMode !== 'explosion' && p.alive && p.role !== '喵皇') p.role = '???';
             }
         });
         return s;
@@ -572,6 +610,7 @@ const Net = {
         this.roomId = '';
         this.roomName = '';
         this.targetPlayers = 5;
+        this.battleMode = 'classic';
         setTimeout(() => { this.suppressHostClose = false; }, 100);
     },
 
@@ -580,12 +619,13 @@ const Net = {
     },
 
     getAvailableHeroes: function() {
-        let used = this.mpPlayers.filter(p => p.ready && p.hero).map(p => p.hero);
+        let used = this.mpPlayers.filter(p => p.ready && p.hero).flatMap(p => Array.isArray(p.hero) ? p.hero : [p.hero]);
         let heroes = Object.keys(HEROES).filter(id => !used.includes(id));
         return heroes.length ? heroes : Object.keys(HEROES);
     },
 
     isHeroTaken: function(heroId, peerId) {
+        if (this.battleMode === 'team3') return false;
         return this.mpPlayers.some(p => p.ready && p.hero === heroId && p.peerId !== peerId);
     },
 
@@ -595,8 +635,22 @@ const Net = {
 
     getTargetPlayers: function() {
         let el = document.getElementById('mp-match-size');
+        if (el && el.value === 'team3') return 2;
+        if (el && String(el.value).startsWith('boom')) return Math.max(2, Math.min(4, Number(String(el.value).replace('boom', '')) || 2));
         let n = Number(el ? el.value : 5);
         return n === 2 ? 2 : 5;
+    },
+    getBattleMode: function() {
+        let el = document.getElementById('mp-match-size');
+        if (el && el.value === 'team3') return 'team3';
+        return el && String(el.value).startsWith('boom') ? 'explosion' : 'classic';
+    },
+
+    isValidHeroSelection: function(hero) {
+        if (this.battleMode === 'team3') {
+            return Array.isArray(hero) && hero.length === 3 && new Set(hero).size === 3 && hero.every(h => this.isValidHero(h));
+        }
+        return this.isValidHero(hero);
     },
 
     getPlayerName: function(fallback) {

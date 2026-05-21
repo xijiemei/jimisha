@@ -14,6 +14,7 @@
 </head>
 <body>
     <div id="audio-preload" style="display:none;"></div>
+    <div id="explosion-banner" aria-live="assertive"></div>
     <div id="death-banner" aria-live="polite"></div>
     <div id="judge-banner" aria-live="polite"></div>
     <div id="turn-banner" aria-live="polite"></div>
@@ -44,14 +45,31 @@
         <h2>🐱 基米杀 <small style="font-size:0.6em">v1.1</small></h2>
 
         <div id="screen-menu" class="screen active">
-            <select id="sp-match-size" class="match-size-select">
-                <option value="5">5人猫窝局</option>
-                <option value="2">1v1 双猫对哈</option>
-            </select>
-            <br>
-            <button class="btn btn-primary" onclick="Game.startSPFromMenu()">🤖 单机吸猫</button>
-            <button class="btn btn-success" onclick="Net.setupMP()">🌍 联机吸猫</button>
+            <input type="hidden" id="sp-match-size" value="5">
+            <button class="btn btn-primary" onclick="Game.openPlayModeSelect('SP')">🤖 单机吸猫</button>
+            <button class="btn btn-success" onclick="Game.openPlayModeSelect('MP')">🌍 联机吸猫</button>
             <div style="margin-top:20px; font-size:12px; color:#888;">Chrome / Edge 体验最佳</div>
+        </div>
+
+        <div id="screen-mode-select" class="screen">
+            <button class="btn-back" onclick="Game.showScreen('screen-menu')">🏠 返回</button>
+            <h3>选择玩法</h3>
+            <div class="mode-grid">
+                <button class="btn btn-primary" onclick="Game.choosePlayMode('5')">经典五猫争霸</button>
+                <button class="btn btn-primary" onclick="Game.choosePlayMode('2')">1v1 极速喵斗</button>
+                <button class="btn btn-primary" onclick="Game.choosePlayMode('team3')">1v1 至尊猫王对决</button>
+                <button class="btn btn-primary" onclick="Game.showExplosionPlayerSelect()">爆炸猫窝</button>
+            </div>
+        </div>
+
+        <div id="screen-explosion-count" class="screen">
+            <button class="btn-back" onclick="Game.showScreen('screen-mode-select')">🏠 返回</button>
+            <h3>爆炸猫窝人数</h3>
+            <div class="mode-grid">
+                <button class="btn btn-primary" onclick="Game.choosePlayMode('boom2')">2 人喵局</button>
+                <button class="btn btn-primary" onclick="Game.choosePlayMode('boom3')">3 人喵局</button>
+                <button class="btn btn-primary" onclick="Game.choosePlayMode('boom4')">4 人喵局</button>
+            </div>
         </div>
 
         <div id="screen-select" class="screen">
@@ -70,9 +88,13 @@
             <br><br>
             <input type="text" id="mp-room-name" placeholder="房间名字，例如：周五猫局" maxlength="12">
             <br><br>
-            <select id="mp-match-size" class="match-size-select">
+            <select id="mp-match-size" class="match-size-select" style="display:none;">
                 <option value="5">5人猫窝局</option>
-                <option value="2">双猫对哈</option>
+                <option value="2">1v1 极速喵斗</option>
+                <option value="boom2">爆炸猫窝 2人</option>
+                <option value="boom3">爆炸猫窝 3人</option>
+                <option value="boom4">爆炸猫窝 4人</option>
+                <option value="team3">1v1 至尊猫王对决</option>
             </select>
             <br><br>
             <input type="text" id="mp-custom-room-id" placeholder="自定义猫窝ID，可不填" maxlength="18" style="width:40%">
@@ -116,13 +138,17 @@
                         <span id="ui-maodie-stack" class="maodie-stack"></span>
                         <span id="ui-seed-stack" class="seed-stack"></span>
                     </div>
+                    <div id="ui-action-hint" class="action-hint"></div>
                 </div>
                 <div class="music-controls">
                     <button class="btn btn-warn btn-sm" onclick="Game.toggleBGM()">🎵 <span id="bgm-status">播放</span></button>
                     <button class="btn btn-warn btn-sm" onclick="Game.nextBGM()">⏭️</button>
                     <span id="bgm-title" style="font-size:10px; margin-left: 5px;">BGM</span>
                 </div>
-                <button id="btn-end-turn" class="btn btn-primary" style="padding:6px 12px;" onclick="Game.handleEndTurnClick()">结束回合</button>
+                <div class="turn-controls">
+                    <button id="btn-surrender" class="btn btn-danger" onclick="Game.handleSurrenderClick()">投降</button>
+                    <button id="btn-end-turn" class="btn btn-primary" onclick="Game.handleEndTurnClick()">结束回合</button>
+                </div>
             </div>
 
             <div id="phase-bar" style="display:none;">⚠️ 爪子满了：请扔掉 <span id="discard-count">0</span> 张牌喵！</div>

@@ -1,8 +1,11 @@
 const Game = {
     mode: 'NONE',
     myId: 0,
+    myTeamId: 0,
     spPlayerCount: 5,
+    battleMode: 'classic',
     selectedHeroId: null,
+    selectedHeroIds: [],
     uiState: {},
     uiSelectedCardIdx: -1,
     uiClickTimer: null,
@@ -20,6 +23,7 @@ const Game = {
     bgmIndex: 0,
     isBGMPlaying: false,
     soundSeqSeen: 0,
+    explosionSeqSeen: 0,
     audioCache: {},
     LOG_LIMIT: 50,
 
@@ -69,6 +73,7 @@ const Game = {
 
         // 1. 响应阶段
         if (state.pendingAction) {
+            if (state.pendingAction.type === 'BOT_EXPLOSION_DEATH') return;
             let target = state.players.find(p => p.id === state.pendingAction.targetId);
             if (target && target.isBot && !target.thinking) {
                 target.thinking = true;
@@ -189,6 +194,24 @@ const Game = {
         let el = document.getElementById(id);
         if(el) el.classList.add('active');
     },
+    openPlayModeSelect: function(mode) {
+        this.pendingLaunchMode = mode === 'MP' ? 'MP' : 'SP';
+        this.showScreen('screen-mode-select');
+    },
+    showExplosionPlayerSelect: function() {
+        this.showScreen('screen-explosion-count');
+    },
+    choosePlayMode: function(value) {
+        if (this.pendingLaunchMode === 'MP') {
+            let mp = document.getElementById('mp-match-size');
+            if (mp) mp.value = value;
+            Net.setupMP();
+            return;
+        }
+        let sp = document.getElementById('sp-match-size');
+        if (sp) sp.value = value;
+        this.startSPSetup(value === 'team3' || String(value).startsWith('boom') ? value : Number(value));
+    },
     log: function(msg) {
         let d = document.getElementById('game-log');
         if (d) {
@@ -287,6 +310,105 @@ const Game = {
         banner.classList.add('show');
         setTimeout(() => banner.classList.remove('show'), 1800);
     },
+    isExplosionMode: function(state) {
+        state = state || this.gameState;
+        return !!state && state.battleMode === 'explosion';
+    },
+    getModeLabel: function() {
+        if (this.battleMode === 'explosion' || this.isExplosionMode()) return '爆炸猫窝';
+        if (this.battleMode === 'team3') return '1v1 至尊猫王对决';
+        return this.gameState?.players?.length === 2 ? '1v1 极速喵斗' : '经典五猫争霸';
+    },
+    isToolCard: function(card) {
+        return !!card && ['heal', 'buff', 'aoe', 'bark', 'sun', 'duel', 'dismantle', 'steal', 'peek'].includes(card.type);
+    },
+    ensureStats: function(p) {
+        if (!p.stats) p.stats = { damage: 0, taken: 0, kills: 0, heals: 0, dodges: 0, cardsPlayed: 0, firstBlood: false, survivedDying: 0 };
+        return p.stats;
+    },
+    recordCardPlayed: function(p, card) {
+        if (!p || !card) return;
+        this.ensureStats(p).cardsPlayed++;
+    },
+    recordHeal: function(p, amount) {
+        if (!p || !amount) return;
+        this.ensureStats(p).heals += amount;
+    },
+    recordDamage: function(source, target, amount) {
+        if (source && source.id !== target?.id) {
+            let s = this.ensureStats(source);
+            s.damage += amount;
+            if (!this.gameState.firstBloodDone) { this.gameState.firstBloodDone = true; s.firstBlood = true; }
+        }
+        if (target) this.ensureStats(target).taken += amount;
+    },
+    getRecommendation: function(me, card, state) {
+        if (!me || !card || state.turnIdx !== this.myId || state.pendingAction || state.aoeState) return null;
+        if (state.discardingPlayerId === this.myId) return { text: '可弃', tone: 'discard', reason: '手牌超上限，先丢不关键的牌。' };
+        if (card.type === 'heal' && me.hp < me.maxHp) return { text: '先回血', tone: 'heal', reason: '你不是满血，冻干很稳。' };
+        if (card.type === 'buff' && me.hand.some(c => c.type === 'attack') && !me.isDrunk) return { text: '先上头', tone: 'power', reason: '配合哈气可以打出更高伤害。' };
+        if (card.type === 'attack') {
+            let dmg = me.isDrunk ? 2 : 1;
+            let target = state.players.find(p => p.alive && p.id !== me.id && p.hp <= dmg);
+            if (target) return { text: '可收割', tone: 'danger', reason: `${target.name} 血量很低，可以考虑点他。` };
+            if (!me.hasHissed || me.hero === 'MAODIE') return { text: '能开哈', tone: 'attack', reason: '选一名对手作为目标。' };
+        }
+        if ((card.type === 'aoe' || card.type === 'bark') && state.players.filter(p => p.alive && p.id !== me.id).length >= 2) return { text: '全场搞事', tone: 'danger', reason: '会让所有其他玩家都要响应。' };
+        if (card.type === 'duel' && me.hand.some(c => c.type === 'attack')) return { text: '逼对哈', tone: 'attack', reason: '你手里有哈气，互殴更有底气。' };
+        if (card.type === 'steal' || card.type === 'dismantle') return { text: '拆节奏', tone: 'power', reason: '适合打断手牌多的人。' };
+        if (card.type === 'sun' && me.hand.length >= 3) return { text: '换手牌', tone: 'heal', reason: '弃两张还能回血。' };
+        if (card.type === 'defense' || card.type === 'nullify') return { text: '留着防', tone: 'keep', reason: '这是响应牌，关键时刻保命。' };
+        return null;
+    },
+    getActionHint: function(me, state) {
+        if (!me || state.gameOver) return '';
+        let deckInfo = this.getExplosionDeckInfo(state);
+        if (state.teamMode && state.initialActivePick) {
+            let team = (state.teams || []).find(t => t.id === this.myTeamId);
+            return team && team.activeId === null ? '请选择首发猫，双方都选好后才开始第一回合。' : '等待对方选择首发猫。';
+        }
+        if (state.teamMode && state.awaitTeamPick) return state.turnTeamId === this.myTeamId ? '请选择本回合出战猫。' : '等待对方选择出战猫。';
+        if (state.pendingAction && state.pendingAction.targetId === this.myId) return '轮到你响应：看弹窗决定要不要交牌。';
+        if (state.turnIdx !== this.myId) return `等待 ${state.players[state.turnIdx]?.name || '对手'} 行动。`;
+        if (state.discardingPlayerId === this.myId) return '手牌超过上限，点击要弃掉的牌。';
+        let best = me.hand.map(c => this.getRecommendation(me, c, state)).find(Boolean);
+        let hint = best ? `${best.text}：${best.reason}` : '没有明显好牌可出，可以结束回合保留手牌。';
+        return deckInfo ? `${hint} ${deckInfo}` : hint;
+    },
+    getExplosionDeckInfo: function(state) {
+        state = state || this.gameState;
+        if (!this.isExplosionMode(state) || !Array.isArray(state.deck)) return '';
+        let total = state.deck.length;
+        let bombs = state.deck.filter(c => c.type === 'explode').length;
+        let pct = total > 0 ? Math.round((bombs / total) * 100) : 0;
+        return `牌堆 ${total} 张｜爆炸 ${bombs} 张｜下摸爆炸约 ${pct}%`;
+    },
+    getExplosionDrawRisk: function(count, state) {
+        state = state || this.gameState;
+        if (!this.isExplosionMode(state) || !Array.isArray(state.deck)) return 0;
+        let total = state.deck.length;
+        let bombs = state.deck.filter(c => c.type === 'explode').length;
+        let safe = total - bombs;
+        let n = Math.min(Math.max(1, count), total);
+        if (total <= 0 || bombs <= 0) return 0;
+        if (n > safe) return 100;
+        let noBomb = 1;
+        for (let i = 0; i < n; i++) noBomb *= (safe - i) / (total - i);
+        return Math.round((1 - noBomb) * 100);
+    },
+    getHeroMeta: function(id) {
+        const meta = {
+            HAPPY: { level: '简单', vibe: '稳扎稳打', tags: ['回血', '容错高'], hook: '少摸一张换回血，适合第一次上桌。' },
+            MAODIE: { level: '中等', vibe: '连哈压制', tags: ['进攻', '连击'], hook: '可以连续哈气，节奏凶，但要注意自己掉血。' },
+            BANANA: { level: '简单', vibe: '哭掉伤害', tags: ['防守', '运气'], hook: '被哈气时有机会直接哭没伤害，很适合整活。' },
+            HUH: { level: '简单', vibe: '装作没听懂', tags: ['防守', '干扰'], hook: '被点名时弃牌躲哈气，手牌越多越安心。' },
+            LOWPOLY: { level: '中等', vibe: '牌多任性', tags: ['摸牌', '发育'], hook: '摸牌多，空手时还不怕哈气，适合慢慢攒优势。' },
+            TOM: { level: '进阶', vibe: '什么都能变', tags: ['百变', '复活'], hook: '手牌可以变成别的牌，还能多次复活，操作空间最大。' },
+            DUOLA: { level: '中等', vibe: '口袋续航', tags: ['转换', '复活'], hook: '冻干和猫薄荷互换，濒死还能开一次时光机。' },
+            MIAOMIAO: { level: '进阶', vibe: '种子吸血', tags: ['布局', '反转'], hook: '把伤害改成种子，之后别人掉血会给你回血。' }
+        };
+        return meta[id] || { level: '普通', vibe: HEROES[id]?.title || '', tags: [], hook: HEROES[id]?.desc || '' };
+    },
     createDeck: function() {
         let deck = [];
         const add = (proto, count) => { for(let i=0; i<count; i++) { let s = SUITS[Math.floor(Math.random()*4)]; deck.push({ ...proto, suit: s, color: COLORS[s], uid: Math.random() }); }};
@@ -295,12 +417,151 @@ const Game = {
         add(CARDS.SUN, 3);
         return deck.sort(() => Math.random() - 0.5);
     },
-    drawCards: function(p, count) {
-        if (!p.alive) return;
+    createExplosionDeck: function(playerCount, includeBombs) {
+        let deck = [];
+        const configs = {
+            2: { HISS: 8, DODGE: 5, CATNIP: 2, FIGHT: 2, CUP: 2, PUNCH: 2, EARS: 1, BARK: 0, AOE: 1, PEEK: 3, EXPLODE: 1 },
+            3: { HISS: 10, DODGE: 7, CATNIP: 3, FIGHT: 2, CUP: 3, PUNCH: 3, EARS: 2, BARK: 1, AOE: 1, PEEK: 4, EXPLODE: 2 },
+            4: { HISS: 12, DODGE: 8, CATNIP: 4, FIGHT: 3, CUP: 4, PUNCH: 4, EARS: 2, BARK: 1, AOE: 2, PEEK: 5, EXPLODE: 3 }
+        };
+        let cfg = configs[playerCount] || configs[4];
+        const add = (proto, count) => {
+            for (let i = 0; i < count; i++) {
+                let s = SUITS[Math.floor(Math.random() * 4)];
+                deck.push({ ...proto, suit: s, color: COLORS[s], uid: Math.random() });
+            }
+        };
+        Object.keys(cfg).forEach(key => {
+            if (key === 'EXPLODE' && !includeBombs) return;
+            add(CARDS[key], cfg[key]);
+        });
+        return deck.sort(() => Math.random() - 0.5);
+    },
+    insertExplosionBombs: function() {
+        let state = this.gameState;
+        if (!this.isExplosionMode(state) || !state.explosion || state.explosion.bombsInserted) return;
+        let count = state.explosion.bombCount || Math.max(1, state.players.filter(p => p.alive).length - 1);
         for (let i = 0; i < count; i++) {
-            if (this.gameState.deck.length === 0) { this.gameState.deck = this.createDeck(); this.log("🎴 牌堆重新洗混了喵！"); }
-            p.hand.push(this.gameState.deck.pop());
+            let s = SUITS[Math.floor(Math.random() * 4)];
+            state.deck.push({ ...CARDS.EXPLODE, suit: s, color: COLORS[s], uid: Math.random() });
         }
+        state.deck.sort(() => Math.random() - 0.5);
+        state.explosion.bombsInserted = true;
+        this.log('💥 猫砂盆爆炸已经混入牌堆！');
+    },
+    drawCards: function(p, count, opts) {
+        if (!p.alive) return;
+        opts = opts || {};
+        this.syncTeamHands();
+        for (let i = 0; i < count; i++) {
+            if (this.gameState.deck.length === 0) {
+                this.gameState.deck = this.isExplosionMode() ? this.createExplosionDeck(this.gameState.players.length, false) : this.createDeck();
+                this.log("🎴 牌堆重新洗混了喵！");
+            }
+            let card = this.gameState.deck.pop();
+            if (this.isExplosionMode() && card && card.type === 'explode' && !opts.safe) {
+                this.handleExplosionDraw(p, card);
+                return;
+            } else {
+                p.hand.push(card);
+            }
+        }
+    },
+    drawSafeNonBomb: function(p) {
+        if (!p || !p.alive) return;
+        for (let i = this.gameState.deck.length - 1; i >= 0; i--) {
+            if (this.gameState.deck[i].type !== 'explode') {
+                p.hand.push(this.gameState.deck.splice(i, 1)[0]);
+                this.log(`🎁 ${p.name} 击杀求生猫，摸到1张安全牌`);
+                return;
+            }
+        }
+        this.log('🎁 牌堆里没有安全牌，击杀奖励跳过。');
+    },
+    showExplosionBanner: function(player) {
+        let banner = document.getElementById('explosion-banner');
+        if (!banner) return;
+        banner.innerHTML = `
+            <div class="explosion-flash"></div>
+            <div class="explosion-card">
+                <div class="explosion-title">猫砂盆爆炸！</div>
+                <div class="explosion-name">${this.escapeHTML(player?.name || '求生猫')} 踩中了大危机</div>
+            </div>`;
+        banner.classList.remove('show');
+        void banner.offsetWidth;
+        banner.classList.add('show');
+        setTimeout(() => banner.classList.remove('show'), 2600);
+    },
+    handleExplosionDraw: function(p, bombCard) {
+        this.gameState.explosionFxSeq = (this.gameState.explosionFxSeq || 0) + 1;
+        this.gameState.explosionFxPlayerName = p.name;
+        this.explosionSeqSeen = this.gameState.explosionFxSeq;
+        this.showExplosionBanner(p);
+        this.log(`💥 ${p.name} 摸到了【猫砂盆爆炸】！`);
+        p.lastAction = '💥 猫砂盆爆炸';
+        let defuseIdx = p.hand.findIndex(c => c.type === 'defuse');
+        if (defuseIdx < 0) {
+            this.log(`💀 ${p.name} 没有【埋屎】，直接出局！`);
+            if (p.isBot) {
+                this.gameState.pendingAction = { type: 'BOT_EXPLOSION_DEATH', sourceId: p.id, targetId: p.id, aoeResume: !!(this.gameState.aoeState && this.gameState.aoeState.queue && this.gameState.aoeState.queue[0] === p.id) };
+                this.updateAll();
+                setTimeout(() => {
+                    if (this.gameState.pendingAction && this.gameState.pendingAction.type === 'BOT_EXPLOSION_DEATH' && this.gameState.pendingAction.targetId === p.id) {
+                        this.gameState.pendingAction = null;
+                        this.processExplosionDeath(p);
+                    }
+                }, 1800);
+            } else {
+                this.processExplosionDeath(p);
+            }
+            return;
+        }
+        p.hand.splice(defuseIdx, 1);
+        this.log(`🧻 ${p.name} 打出【埋屎】，把危机埋回去`);
+        this.askForResponse('EXPLOSION', p.id, p.id, { bomb: bombCard, resumeId: this.gameState.turnIdx, aoeResume: !!(this.gameState.aoeState && this.gameState.aoeState.queue && this.gameState.aoeState.queue[0] === p.id) });
+    },
+    insertBombAtChoice: function(bombCard, choice) {
+        let deck = this.gameState.deck;
+        let card = bombCard || { ...CARDS.EXPLODE, uid: Math.random() };
+        let fromTop = choice === 'TOP1' ? 1 : (choice === 'TOP3' ? 3 : (choice === 'TOP5' ? 5 : 0));
+        if (!fromTop) {
+            deck.unshift(card);
+            return;
+        }
+        let idx = Math.max(0, deck.length - fromTop + 1);
+        deck.splice(idx, 0, card);
+    },
+    processExplosionDeath: function(p) {
+        let shouldResumeAOE = !!(this.gameState.aoeState && this.gameState.aoeState.queue && this.gameState.aoeState.queue[0] === p.id);
+        p.explosionKilled = true;
+        this.processDeath(p, null);
+        p.explosionKilled = false;
+        if (shouldResumeAOE && !this.gameState.gameOver && this.gameState.aoeState) {
+            if (this.gameState.aoeState.queue[0] === p.id) this.gameState.aoeState.queue.shift();
+            setTimeout(() => {
+                if (!this.gameState.gameOver && this.gameState.aoeState) this.processAOEQueue();
+            }, 2200);
+        }
+    },
+    openPeekPrompt: function(cardIdx) {
+        let top = this.gameState.deck.slice(-3).reverse();
+        if (!top.length) return this.showNotice('牌堆已经空了，什么也闻不到。');
+        let names = top.map((c, i) => `${i + 1}. ${c.name}`).join(' / ');
+        let perms = top.length === 1 ? [[0]] : (top.length === 2 ? [[0, 1], [1, 0]] : [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]);
+        let buttons = perms.map(order => ({
+            text: `按 ${order.map(i => String(i + 1)).join('-')} 放回`,
+            cls: order.every((v, i) => v === i) ? 'primary' : 'warn',
+            cb: () => this.confirmPlayCard(cardIdx, { peekOrder: order })
+        }));
+        this.showPrompt('闻一下', `牌堆顶是：${names}。按钮数字表示把上面第几张牌放回第1、第2、第3的位置。`, buttons);
+    },
+    applyPeekOrder: function(order) {
+        let count = Math.min(3, this.gameState.deck.length);
+        let top = this.gameState.deck.splice(this.gameState.deck.length - count, count).reverse();
+        let clean = (Array.isArray(order) ? order : [0, 1, 2]).filter(i => Number.isInteger(i) && i >= 0 && i < count);
+        if (new Set(clean).size !== count) clean = Array.from({ length: count }, (_, i) => i);
+        let arrangedTopFirst = clean.map(i => top[i]);
+        this.gameState.deck.push(...arrangedTopFirst.reverse());
     },
     getDistance: function(p1, p2) {
         if (!p1 || !p2 || p1.id === p2.id) return 0;
@@ -312,11 +573,54 @@ const Game = {
         return Math.min(dist, alive.length - dist);
     },
     getHandLimit: function(p) {
+        if (this.isExplosionMode()) return Infinity;
         if (!p) return 0;
         return Math.max(0, p.hp) + (p.hero === 'BANANA' ? 1 : 0);
     },
+    isTeamMode: function() {
+        return this.gameState && this.gameState.teamMode;
+    },
+    getTeam: function(teamId) {
+        return (this.gameState.teams || []).find(t => t.id === teamId);
+    },
+    syncTeamHands: function(state) {
+        state = state || this.gameState;
+        if (!state || !state.teamMode || !Array.isArray(state.teams)) return;
+        state.players.forEach(p => {
+            let team = state.teams.find(t => t.id === p.teamId);
+            if (team) p.hand = team.hand = team.hand || [];
+        });
+    },
+    getControlledPlayer: function(state) {
+        state = state || this.gameState;
+        if (!state.teamMode) return state.players.find(p => p.id === this.myId);
+        let teamId = this.myTeamId || 0;
+        if (this.mode === 'MP' && Net.peer && Net.peer.id) {
+            let team = (state.teams || []).find(t => t.peerId === Net.peer.id);
+            if (team) teamId = this.myTeamId = team.id;
+        }
+        let pendingTarget = state.pendingAction ? state.players.find(p => p.id === state.pendingAction.targetId) : null;
+        if (pendingTarget && pendingTarget.teamId === teamId) return pendingTarget;
+        let team = (state.teams || []).find(t => t.id === teamId);
+        return state.players.find(p => p.id === team?.activeId) || state.players.find(p => p.teamId === teamId && p.alive);
+    },
+    getTeamAlive: function(teamId) {
+        return this.gameState.players.filter(p => p.teamId === teamId && p.alive);
+    },
+    getOpponentActive: function(teamId) {
+        let enemy = (this.gameState.teams || []).find(t => t.id !== teamId);
+        return this.gameState.players.find(p => p.id === enemy?.activeId && p.alive) || null;
+    },
+    isActiveTeamCat: function(p) {
+        let team = this.getTeam(p?.teamId);
+        return !!p && !!team && team.activeId === p.id;
+    },
     getTrickTargets: function(source, card, target) {
         if (!card) return [];
+        if (this.gameState.teamMode) {
+            let activeEnemy = this.getOpponentActive(source.teamId);
+            if (card.type === 'aoe' || card.type === 'bark') return activeEnemy ? [activeEnemy] : [];
+        }
         if (card.type === 'aoe' || card.type === 'bark') return this.gameState.players.filter(p => p.alive && p.id !== source.id);
         return target && target.alive ? [target] : [];
     },
@@ -328,7 +632,7 @@ const Game = {
         return !!card && ['duel', 'dismantle', 'steal'].includes(card.type);
     },
     getDeclaredCard: function(name) {
-        return Object.values(CARDS).find(c => c.name === name && c.type !== 'defense' && c.type !== 'nullify') || null;
+        return Object.values(CARDS).find(c => c.name === name && !['defense', 'nullify', 'explode', 'defuse'].includes(c.type) && !(this.isExplosionMode() && ['sun', 'heal'].includes(c.type))) || null;
     },
     showPrompt: function(title, msg, buttons) {
         this.uiPrompt = { title, msg, buttons: buttons || [] };
@@ -343,7 +647,7 @@ const Game = {
         if (me.baibianUsed) return this.showNotice('【百变】一回合只能使用一次。');
         if (me.hand.length < 2) return this.showNotice('【百变】至少需要两张手牌：一张弃置，一张当作声明的牌使用。');
         let buttons = Object.values(CARDS)
-            .filter(c => c.type !== 'defense' && c.type !== 'nullify')
+            .filter(c => !['defense', 'nullify', 'explode', 'defuse'].includes(c.type) && !(this.isExplosionMode() && ['sun', 'heal'].includes(c.type)))
             .map(c => ({ text: c.name, cls: 'primary', cb: () => this.chooseBaibianCard(c.name) }));
         buttons.push({ text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.renderGame(this.gameState); } });
         this.showPrompt('发动【百变】', '请选择要声明的牌名。', buttons);
@@ -439,15 +743,28 @@ const Game = {
     startSPSetup: function(count) {
         this.mode = 'SP';
         this.myId = 0;
-        this.spPlayerCount = count === 2 ? 2 : 5;
+        this.myTeamId = 0;
+        this.battleMode = String(count).startsWith('boom') ? 'explosion' : (count === 'team3' ? 'team3' : 'classic');
+        this.spPlayerCount = this.battleMode === 'explosion' ? Math.max(2, Math.min(4, Number(String(count).replace('boom', '')) || 2)) : (count === 2 ? 2 : 5);
         this.renderHeroSelect();
     },
     startSPFromMenu: function() {
         let el = document.getElementById('sp-match-size');
-        this.startSPSetup(Number(el ? el.value : 5));
+        let val = el ? el.value : '5';
+        this.startSPSetup(val === 'team3' || String(val).startsWith('boom') ? val : Number(val));
     },
     startSPGame: function() {
         this.showScreen('screen-game');
+        if (this.battleMode === 'team3') {
+            let chosen = this.selectedHeroIds.slice(0, 3);
+            let pool = Object.keys(HEROES).filter(k => !chosen.includes(k)).sort(() => Math.random() - 0.5).slice(0, 3);
+            let setup = this.createTeamBattlePlayers([
+                { id: 0, name: '玩家', isBot: false, hero: chosen, peerId: 'sp-human' },
+                { id: 1, name: 'Bot队', isBot: true, hero: pool, peerId: 'sp-bot' }
+            ]);
+            this.initTeamBattleLogic(setup.players, setup.teams);
+            return;
+        }
         let ps = [this.createPlayer(0, `玩家`, false)];
         ps[0].hero = this.selectedHeroId;
         let ks = Object.keys(HEROES).filter(k => k !== this.selectedHeroId);
@@ -456,12 +773,33 @@ const Game = {
             ks = ks.filter(x => x !== h);
             let b = this.createPlayer(i, `Bot${i}`, true); b.hero = h; ps.push(b);
         }
-        this.initGameLogic(ps);
+        if (this.battleMode === 'explosion') this.initExplosionLogic(ps);
+        else this.initGameLogic(ps);
     },
-    createPlayer: function(id, name, isBot) { return { id, name, isBot, role: '', hero: '', hp: 0, maxHp: 0, hand: [], alive: true, hasHissed: false, hissStack: 0, botAttackCount: 0, cryingUsed: false, isDrunk: false, lastAction: '', timeMachineUsed: false, seedUses: 0, seeds: {}, baibianUsed: false }; },
+    createPlayer: function(id, name, isBot) { return { id, name, isBot, role: '', hero: '', hp: 0, maxHp: 0, hand: [], alive: true, hasHissed: false, hissStack: 0, botAttackCount: 0, turnAttackUsed: false, turnToolUsed: false, cryingUsed: false, isDrunk: false, lastAction: '', timeMachineUsed: false, seedUses: 0, seeds: {}, baibianUsed: false, stats: { damage: 0, taken: 0, kills: 0, heals: 0, dodges: 0, cardsPlayed: 0, firstBlood: false, survivedDying: 0 } }; },
+
+    createTeamBattlePlayers: function(lobbyPlayers) {
+        let players = [];
+        let teams = lobbyPlayers.slice(0, 2).map((lp, teamId) => ({ id: teamId, name: lp.name, peerId: lp.peerId, isBot: !!lp.isBot, hand: [], activeId: null }));
+        lobbyPlayers.slice(0, 2).forEach((lp, teamId) => {
+            (lp.hero || []).slice(0, 3).forEach((heroId, slot) => {
+                let p = this.createPlayer(players.length, `${lp.name}-${slot + 1}`, !!lp.isBot);
+                p.peerId = lp.peerId;
+                p.teamId = teamId;
+                p.teamSlot = slot;
+                p.hero = heroId;
+                p.hand = teams[teamId].hand;
+                p.role = teamId === 0 ? '蓝队' : '红队';
+                players.push(p);
+            });
+        });
+        teams.forEach(t => t.activeId = null);
+        return { players, teams };
+    },
 
     initGameLogic: function(players) {
-        this.gameState = { players, deck: this.createDeck(), turnIdx: 0, logs: [], started: true, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null, soundSeq: 0, soundType: '' };
+        this.battleMode = 'classic';
+        this.gameState = { players, deck: this.createDeck(), turnIdx: 0, logs: [], started: true, battleMode: 'classic', firstBloodDone: false, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null, soundSeq: 0, soundType: '' };
         let roles = players.length === 2
             ? ['喵皇', '反骨喵'].sort(() => Math.random() - 0.5)
             : ['喵皇', '护驾喵', '反骨喵', '反骨喵', '老六'].sort(() => Math.random() - 0.5);
@@ -470,14 +808,59 @@ const Game = {
             let baseHp = HEROES[p.hero] ? HEROES[p.hero].hp : 3;
             if (p.role === '喵皇' && players.length !== 2) baseHp += 1;
             p.hp = baseHp; p.maxHp = baseHp;
+            p.turnAttackUsed = false; p.turnToolUsed = false;
+            p.stats = { damage: 0, taken: 0, kills: 0, heals: 0, dodges: 0, cardsPlayed: 0, firstBlood: false, survivedDying: 0 };
             if (p.role === '喵皇') this.gameState.turnIdx = i;
             let drawCount = (p.hero === 'LOWPOLY') ? 3 : 4;
             this.drawCards(p, drawCount);
         });
-        this.log("🎮 游戏开始喵！"); this.startTurn();
+        this.log(`🎮 ${this.getModeLabel()}开始喵！`); this.startTurn();
+    },
+
+    initExplosionLogic: function(players) {
+        this.battleMode = 'explosion';
+        let bombCount = Math.max(1, players.length - 1);
+        this.gameState = { players, deck: this.createExplosionDeck(players.length, false), turnIdx: 0, logs: [], started: true, battleMode: 'explosion', firstBloodDone: false, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null, soundSeq: 0, soundType: '', explosion: { initialTurns: 0, turnsCompleted: 0, bombsInserted: false, bombCount, noStartDrawRemaining: players.length } };
+        players.forEach(p => {
+            p.role = '求生猫';
+            let baseHp = 1;
+            p.hp = baseHp; p.maxHp = baseHp;
+            p.turnAttackUsed = false; p.turnToolUsed = false;
+            p.stats = { damage: 0, taken: 0, kills: 0, heals: 0, dodges: 0, cardsPlayed: 0, firstBlood: false, survivedDying: 0 };
+            this.drawCards(p, 6, { safe: true });
+            p.hand.push({ ...CARDS.DEFUSE, suit: '猫', color: 'black', uid: Math.random() });
+        });
+        this.insertExplosionBombs();
+        this.gameState.turnIdx = 0;
+        this.log(`💣 爆炸猫窝开始：${players.length} 只求生猫，猫砂盆爆炸已经混入牌堆。`);
+        this.startTurn();
+    },
+
+    initTeamBattleLogic: function(players, teams) {
+        this.battleMode = 'team3';
+        this.myTeamId = 0;
+        this.gameState = { players, teams, deck: this.createDeck(), turnIdx: players.find(p => p.teamId === 0)?.id ?? 0, turnTeamId: 0, initialActivePick: true, awaitTeamPick: false, logs: [], started: true, teamMode: true, battleMode: 'team3', firstBloodDone: false, pendingAction: null, aoeState: null, discardingPlayerId: null, gameOver: null, soundSeq: 0, soundType: '' };
+        this.syncTeamHands();
+        players.forEach(p => {
+            let baseHp = HEROES[p.hero] ? HEROES[p.hero].hp : 3;
+            p.hp = baseHp; p.maxHp = baseHp;
+            p.stats = { damage: 0, taken: 0, kills: 0, heals: 0, dodges: 0, cardsPlayed: 0, firstBlood: false, survivedDying: 0 };
+        });
+        teams.forEach(t => this.drawCards(players.find(p => p.teamId === t.id), 4));
+        this.log('🎮 3v3 猫队战准备开始！双方先选择首发猫。');
+        this.startTurn();
     },
 
     startTurn: function() {
+        this.syncTeamHands();
+        if (this.gameState.teamMode && this.gameState.initialActivePick) {
+            this.startInitialTeamPick();
+            return;
+        }
+        if (this.gameState.teamMode && this.gameState.awaitTeamPick) {
+            this.startTeamPick();
+            return;
+        }
         let p = this.gameState.players[this.gameState.turnIdx];
         if (!p) return;
         this.gameState.players.forEach(pl => pl.lastAction = ''); // 清空上轮动作
@@ -485,12 +868,24 @@ const Game = {
         if (!p.alive) { this.nextTurn(); return; }
         this.log(`👉 轮到 [${p.name}] 了喵`);
         this.showTurnBanner(p);
-        p.hasHissed = false; p.cryingUsed = false; p.isDrunk = false; p.botAttackCount = 0; p.baibianUsed = false;
+        p.hasHissed = false; p.cryingUsed = false; p.isDrunk = false; p.botAttackCount = 0; p.turnAttackUsed = false; p.turnToolUsed = false; p.baibianUsed = false;
+
+        if (this.isExplosionMode()) {
+            if ((this.gameState.explosion?.noStartDrawRemaining || 0) > 0) {
+                this.gameState.explosion.noStartDrawRemaining--;
+                this.log(`🐾 ${p.name} 第一回合不用摸牌`);
+                this.updateAll();
+                this.resumeTurn(p);
+                return;
+            }
+            this.askForResponse('DRAW_CHOICE', p.id, p.id);
+            return;
+        }
 
         if (p.hero === 'HAPPY' && p.hp < p.maxHp) {
             if (p.isBot) {
                 if (p.hp < p.maxHp && Math.random() > 0.3) { 
-                    this.log(`🎵 ${p.name} 乐天派发作，回1血`); p.hp++; this.drawCards(p, 1); 
+                    this.log(`🎵 ${p.name} 乐天派发作，回1血`); p.hp++; this.recordHeal(p, 1); this.drawCards(p, 1); 
                     this.queueSound('HAPPY'); p.lastAction='🎵 乐天'; 
                 } else this.drawCards(p, 2);
             } else {
@@ -498,6 +893,7 @@ const Game = {
             }
         } else { this.drawCards(p, p.hero === 'LOWPOLY' ? 3 : 2); }
 
+        if (!p.alive || this.gameState.gameOver) return;
         if (!this.gameState.pendingAction) {
             if (p.id === this.myId) this.isDiscardPhase = false;
             this.updateAll();
@@ -505,13 +901,88 @@ const Game = {
     },
 
     nextTurn: function() {
+        if (this.gameState.teamMode) {
+            let nextTeam = this.gameState.turnTeamId === 0 ? 1 : 0;
+            if (this.getTeamAlive(nextTeam).length === 0) {
+                this.finishGame(`${this.getTeam(this.gameState.turnTeamId)?.name || '当前队伍'} 获胜！`);
+                return;
+            }
+            this.gameState.turnTeamId = nextTeam;
+            this.gameState.awaitTeamPick = true;
+            this.gameState.turnIdx = this.getTeam(nextTeam)?.activeId ?? this.getTeamAlive(nextTeam)[0]?.id ?? this.gameState.turnIdx;
+            this.startTurn();
+            return;
+        }
+        if (this.isExplosionMode() && this.gameState.explosion && !this.gameState.explosion.bombsInserted && (this.gameState.explosion.turnsCompleted || 0) >= Math.min(this.gameState.explosion.initialTurns || this.gameState.players.length, this.gameState.players.filter(p => p.alive).length)) {
+            this.insertExplosionBombs();
+        }
         do { this.gameState.turnIdx = (this.gameState.turnIdx + 1) % this.gameState.players.length; } 
         while (!this.gameState.players[this.gameState.turnIdx].alive);
         this.startTurn();
     },
 
+    startInitialTeamPick: function() {
+        (this.gameState.teams || []).forEach(team => {
+            if (team.activeId === null || team.activeId === undefined || !this.gameState.players.find(p => p.id === team.activeId && p.alive)) {
+                team.activeId = null;
+            }
+            if (team.isBot && team.activeId === null) {
+                let alive = this.getTeamAlive(team.id);
+                team.activeId = alive[Math.floor(Math.random() * alive.length)]?.id ?? null;
+            }
+        });
+        let waiting = (this.gameState.teams || []).filter(t => t.activeId === null || t.activeId === undefined);
+        if (!waiting.length) {
+            this.gameState.initialActivePick = false;
+            this.gameState.turnTeamId = 0;
+            this.gameState.turnIdx = this.getTeam(0)?.activeId ?? this.getTeamAlive(0)[0]?.id ?? 0;
+            this.log('🐾 双方首发猫已上场，第一回合开始！');
+            this.startTurn();
+            return;
+        }
+        this.updateAll();
+    },
+
+    startTeamPick: function() {
+        let team = this.getTeam(this.gameState.turnTeamId);
+        let alive = this.getTeamAlive(team.id);
+        if (!alive.length) {
+            let winner = this.getTeam(team.id === 0 ? 1 : 0);
+            this.finishGame(`${winner?.name || '对方'} 获胜！`);
+            return;
+        }
+        if (team.isBot) {
+            let pick = alive.find(p => p.hp < p.maxHp && p.hand.some(c => c.type === 'heal')) || alive[Math.floor(Math.random() * alive.length)];
+            this.chooseTeamActiveCat(pick.id);
+            return;
+        }
+        if (team.id !== this.myTeamId) {
+            this.gameState.turnIdx = team.activeId ?? alive[0].id;
+            if (this.gameState.pendingAction) return;
+            this.updateAll();
+            return;
+        }
+        let buttons = alive.map(p => ({ text: `${HEROES[p.hero]?.name || p.name} ${p.hp}/${p.maxHp}`, cls: 'primary', cb: () => this.chooseTeamActiveCat(p.id) }));
+        this.showPrompt('选择出战猫', '本回合选择一只猫上场行动。只能攻击对方当前上场猫。', buttons);
+    },
+
+    chooseTeamActiveCat: function(playerId) {
+        let p = this.gameState.players.find(x => x.id === playerId && x.alive);
+        if (!p || !this.gameState.teamMode || p.teamId !== this.gameState.turnTeamId) return;
+        let team = this.getTeam(p.teamId);
+        team.activeId = p.id;
+        this.gameState.turnIdx = p.id;
+        this.gameState.awaitTeamPick = false;
+        this.uiPrompt = null;
+        this.myId = p.teamId === this.myTeamId ? p.id : this.myId;
+        this.startTurn();
+    },
+
     // === Bot 逻辑 ===
     getBotEnemy: function(bot) {
+        if (this.gameState.teamMode) {
+            return this.getOpponentActive(bot.teamId);
+        }
         let ps = this.gameState.players.filter(p => p.alive && p.id !== bot.id);
         let king = ps.find(p => p.role === '喵皇');
         if (bot.role === '反骨喵') return king || ps[0]; 
@@ -581,7 +1052,16 @@ const Game = {
         let p = this.gameState.pendingAction;
         if (!p || p.targetId !== bot.id) return;
         
-        if (p.type === 'AOE_ASK') {
+        if (p.type === 'DRAW_CHOICE') {
+            let bombs = this.gameState.deck.filter(c => c.type === 'explode').length;
+            let total = Math.max(1, this.gameState.deck.length);
+            let risk = bombs / total;
+            this.resolveResponse(bot.id, risk > 0.18 ? 'DRAW1' : (Math.random() > 0.45 ? 'DRAW2' : 'DRAW3'));
+        } else if (p.type === 'BOT_EXPLOSION_DEATH') {
+            return;
+        } else if (p.type === 'EXPLOSION') {
+            this.resolveResponse(bot.id, ['TOP3', 'TOP5', 'BOTTOM', 'TOP1'][Math.floor(Math.random() * 4)]);
+        } else if (p.type === 'AOE_ASK') {
             let req = p.cardType;
             if (bot.hand.some(c => c.type === req)) this.resolveResponse(bot.id, 'YES');
             else this.resolveResponse(bot.id, 'NO');
@@ -610,12 +1090,48 @@ const Game = {
     // === 核心交互逻辑 ===
     handleActionInternal: function(p, action) {
         action = action || {};
+        if (action.type === 'CHOOSE_ACTIVE') {
+            let pick = this.gameState.players.find(x => x.id === Number(action.playerId) && x.alive);
+            if (!this.gameState.teamMode || !pick) return false;
+            if (this.gameState.initialActivePick) {
+                if (!p || pick.teamId !== p.teamId) return false;
+                let team = this.getTeam(pick.teamId);
+                team.activeId = pick.id;
+                if (pick.teamId === this.myTeamId) this.myId = pick.id;
+                this.log(`🐾 ${team.name} 首发 ${HEROES[pick.hero]?.name || pick.name}`);
+                this.startInitialTeamPick();
+                return true;
+            }
+            if (pick.teamId !== this.gameState.turnTeamId) return false;
+            this.chooseTeamActiveCat(pick.id);
+            return true;
+        }
         if (!p || !p.alive || this.gameState.gameOver) return false;
+        if (action.type === 'SURRENDER') {
+            this.gameState.pendingAction = null;
+            this.gameState.aoeState = null;
+            this.gameState.discardingPlayerId = null;
+            this.log(`🏳️ ${p.name} 投降了`);
+            p.lastAction = '🏳️ 投降';
+            p.explosionKilled = true;
+            this.processDeath(p, null);
+            p.explosionKilled = false;
+            if (p.id === this.myId) this.showAfterSurrenderPrompt();
+            return true;
+        }
         if (this.gameState.turnIdx !== p.id) return false;
         if (this.gameState.pendingAction || this.gameState.aoeState) return false;
         let done = false;
 
         if (action.type === 'END_TURN') { 
+            if (this.isExplosionMode()) {
+                if (this.gameState.explosion && !this.gameState.explosion.bombsInserted) {
+                    this.gameState.explosion.turnsCompleted = (this.gameState.explosion.turnsCompleted || 0) + 1;
+                }
+                p.isDrunk = false;
+                this.nextTurn();
+                return true;
+            }
             let limit = this.getHandLimit(p);
             if (p.hand.length > limit) {
                 this.gameState.discardingPlayerId = p.id;
@@ -671,7 +1187,8 @@ const Game = {
             let target = Number.isInteger(targetId) ? this.gameState.players.find(pl => pl.id === targetId) : null;
             let needsTarget = ['attack', 'duel', 'dismantle', 'steal'].includes(virtualCard.type);
             if (needsTarget && (!target || !target.alive || target.id === p.id)) return false;
-            if (virtualCard.type === 'steal' && this.getDistance(p, target) > 1) return false;
+            if (needsTarget && this.gameState.teamMode && target.teamId === p.teamId) return false;
+            if (needsTarget && this.gameState.teamMode && target.id !== this.getOpponentActive(p.teamId)?.id) return false;
             if ((virtualCard.type === 'dismantle' || virtualCard.type === 'steal') && target.hand.length === 0) return false;
             if (virtualCard.type === 'attack' && p.hasHissed) return false;
             if (virtualCard.type === 'heal' && p.hp >= p.maxHp) return false;
@@ -685,10 +1202,12 @@ const Game = {
             let card = { ...virtualCard, uid: Math.random(), suit: '百', color: 'red', fromBaibian: true };
             if (card.type === 'sun') card.sunDiscardIndexes = sunDiscardIndexes;
             p.baibianUsed = true;
+            this.recordCardPlayed(p, card);
             p.lastAction = target ? `🎭 百变【${card.name}】→${target.name}` : `🎭 百变【${card.name}】`;
             this.log(`🎭 ${p.name} 发动百变，声明【${card.name}】`);
             if (card.type === 'heal') {
                 if (p.hp < p.maxHp) p.hp++;
+                this.recordHeal(p, 1);
                 this.updateAll();
                 return true;
             }
@@ -707,6 +1226,10 @@ const Game = {
             let target = targetId !== null && Number.isInteger(targetId) ? this.gameState.players.find(pl=>pl.id===targetId) : null;
             let needsTarget = ['attack', 'duel', 'dismantle', 'steal'].includes(card.type);
             let effectiveCard = card;
+            if (this.isExplosionMode() && card.type === 'heal') {
+                if (p.id === this.myId) this.showNotice('爆炸猫窝里没有【冻干】规则，这张牌不能使用。');
+                return false;
+            }
             if (p.hero === 'DUOLA' && action.playAs === 'heal' && card.type === 'buff') {
                 effectiveCard = { ...CARDS.TREAT, uid: card.uid, suit: card.suit, color: card.color, fromCopper: true };
             } else if (p.hero === 'DUOLA' && action.playAs === 'buff' && card.type === 'heal') {
@@ -714,15 +1237,25 @@ const Game = {
             } else if (card.type === 'sun') {
                 let raw = Array.isArray(action.discardIndexes) ? action.discardIndexes.map(Number) : [];
                 effectiveCard = { ...card, sunDiscardIndexes: raw.filter(i => i !== cardIdx).map(i => i > cardIdx ? i - 1 : i) };
+            } else if (card.type === 'peek') {
+                effectiveCard = { ...card, peekOrder: Array.isArray(action.peekOrder) ? action.peekOrder.map(Number) : [0, 1, 2] };
             }
 
-            if (card.type === 'defense' || card.type === 'nullify') {
+            if (['defense', 'nullify', 'defuse', 'explode'].includes(card.type)) {
                 if (p.id === this.myId) this.showNotice(`【${card.name}】是被动牌，无法主动打出。`);
                 return false;
             }
 
             if (needsTarget && (!target || !target.alive || target.id === p.id)) {
                 if (p.id === this.myId) this.showNotice('请选择一个有效目标。');
+                return false;
+            }
+            if (needsTarget && this.gameState.teamMode && target.teamId === p.teamId) {
+                if (p.id === this.myId) this.showNotice('3v3 猫队战只能选择对方猫队作为目标。');
+                return false;
+            }
+            if (needsTarget && this.gameState.teamMode && target.id !== this.getOpponentActive(p.teamId)?.id) {
+                if (p.id === this.myId) this.showNotice('只能攻击对方当前上场猫。');
                 return false;
             }
 
@@ -736,11 +1269,6 @@ const Game = {
                 return false;
             }
 
-            if (effectiveCard.type === 'steal' && this.getDistance(p, target) > 1) {
-                if (p.id === this.myId) this.showNotice('【这一爪】只能对距离为 1 的目标使用。');
-                return false;
-            }
-
             if ((effectiveCard.type === 'dismantle' || effectiveCard.type === 'steal') && target.hand.length === 0) {
                 if (p.id === this.myId) this.showNotice('目标没有可以操作的牌。');
                 return false;
@@ -751,17 +1279,19 @@ const Game = {
             if (effectiveCard.type === 'heal') {
                 if (p.hp >= p.maxHp) { if (p.id === this.myId) this.showNotice("已经满血，不能这样使用【冻干】。"); return false; }
                 p.hand.splice(cardIdx, 1); p.hp++; this.log(`💊 ${p.name} 回血`); done = true;
+                this.recordHeal(p, 1);
                 if (p.hero === 'DUOLA') {
                     this.drawCards(p, 1);
                     this.log(`🔔 ${p.name} 发动铜锣，额外摸1张牌`);
                 }
             } else {
-                if(card.type==='buff'||card.type==='aoe'||card.type==='bark'||card.type==='sun'||target) { 
+                if(card.type==='buff'||card.type==='aoe'||card.type==='bark'||card.type==='sun'||card.type==='peek'||target) { 
                     p.hand.splice(cardIdx, 1); done = true; 
                 } else return false;
             }
 
             if (done) {
+                this.recordCardPlayed(p, effectiveCard);
                 if (this.shouldAskNullify(effectiveCard) && this.askForNullify(p, effectiveCard, target, { sourceId: p.id, targetId: target ? target.id : null, card: effectiveCard })) return true;
                 this.applyCardEffect(p, effectiveCard, target);
                 this.updateAll(); return true;
@@ -819,6 +1349,11 @@ const Game = {
             this.log(`☀️ ${p.name} 使用午后阳光，弃${discardCount}摸${discardCount}${discardCount >= 2 ? '，回复1血' : ''}`);
             p.lastAction = '☀️ 午后阳光';
         }
+        else if (card.type === 'peek') {
+            this.applyPeekOrder(card.peekOrder);
+            this.log(`👃 ${p.name} 使用【闻一下】，调整了牌堆顶的味道`);
+            p.lastAction = '👃 闻一下';
+        }
         else if (card.type === 'aoe' || card.type === 'bark') { 
             this.log(`📢 ${p.name} 放AOE`); this.startAOE(p, card.type); 
         }
@@ -837,14 +1372,44 @@ const Game = {
     },
 
     resolveResponse: function(pid, choice) {
-        choice = choice === 'NULLIFY' ? 'NULLIFY' : (choice === 'YES' ? 'YES' : 'NO');
         if (this.gameState.gameOver) return;
         let pending = this.gameState.pendingAction;
         if (!pending || pending.targetId !== pid) return;
+        if (!['EXPLOSION', 'DRAW_CHOICE'].includes(pending.type)) choice = choice === 'NULLIFY' ? 'NULLIFY' : (choice === 'YES' ? 'YES' : 'NO');
         
         let t = this.gameState.players.find(p => p.id === pid);
         let s = this.gameState.players.find(p => p.id === pending.sourceId);
         if (!t) return;
+
+        if (pending.type === 'DRAW_CHOICE') {
+            this.gameState.pendingAction = null;
+            let n = choice === 'DRAW3' ? 3 : (choice === 'DRAW2' ? 2 : 1);
+            this.log(`🎴 ${t.name} 选择摸 ${n} 张牌`);
+            this.drawCards(t, n);
+            if (this.gameState.pendingAction || this.gameState.gameOver || !t.alive) {
+                this.updateAll();
+                return;
+            }
+            this.updateAll();
+            this.resumeTurn(t);
+            return;
+        }
+
+        if (pending.type === 'EXPLOSION') {
+            this.gameState.pendingAction = null;
+            this.insertBombAtChoice(pending.bomb, choice);
+            t.lastAction = '🧻 埋好爆炸';
+            this.log(`🧻 ${t.name} 把爆炸秘密埋回了牌堆`);
+            this.updateAll();
+            if (pending.aoeResume && this.gameState.aoeState) {
+                if (this.gameState.aoeState.queue[0] === t.id) this.gameState.aoeState.queue.shift();
+                setTimeout(() => this.processAOEQueue(), 500);
+                return;
+            }
+            let resume = this.gameState.players.find(p => p.id === pending.resumeId && p.alive);
+            if (resume && !this.gameState.gameOver && this.gameState.turnIdx === resume.id) this.resumeTurn(resume);
+            return;
+        }
 
         if (pending.type === 'NULLIFY') {
             this.gameState.pendingAction = null;
@@ -888,6 +1453,7 @@ const Game = {
             // 关键修复：AOE 队列必须强制流转，不能因为濒死或其他原因停滞
             if (this.gameState.pendingAction && this.gameState.pendingAction.type === 'DYING') return;
 
+            if (this.gameState.pendingAction) return;
             if (this.gameState.aoeState) {
                 this.gameState.aoeState.queue.shift(); // 移除当前
                 setTimeout(() => this.processAOEQueue(), 500); // 延时递归下一个
@@ -949,20 +1515,23 @@ const Game = {
             let idx = t.hand.findIndex(c => c.type === 'defense');
             if (choice === 'YES' && idx > -1) {
                 t.hand.splice(idx, 1); this.log(`🛡️ ${t.name} 闪避`); t.lastAction = '🛡️ 棘背龙';
+                this.ensureStats(t).dodges++;
             } else {
                 let dmg = pending.damage || 1;
                 this.resolveDamage(t, dmg, s);
             }
             if (this.gameState.pendingAction && this.gameState.pendingAction.type === 'DYING') return;
+            if (this.gameState.pendingAction) return;
             this.updateAll();
             if (s && s.id === this.gameState.turnIdx) this.resumeTurn(s);
             return;
         }
 
         if (pending.type === 'SKILL_HAPPY_START') {
-            if (choice === 'YES') { t.hp++; this.drawCards(t, 1); this.queueSound('HAPPY'); t.lastAction='🎵 乐天回血'; }
-            else this.drawCards(t, 2);
             this.gameState.pendingAction = null;
+            if (choice === 'YES') { t.hp++; this.recordHeal(t, 1); this.drawCards(t, 1); this.queueSound('HAPPY'); t.lastAction='🎵 乐天回血'; }
+            else this.drawCards(t, 2);
+            if (this.gameState.pendingAction) { this.updateAll(); return; }
             this.updateAll();
             this.resumeTurn(t);
             return;
@@ -974,6 +1543,8 @@ const Game = {
             if (choice === 'YES' && idx > -1) { 
                 t.hand.splice(idx,1);
                 t.hp++;
+                this.ensureStats(t).survivedDying++;
+                this.recordHeal(t, 1);
                 this.log(`💊 ${t.name} 自救，回复1血`);
                 t.lastAction='💊 冻干';
                 if (t.hp <= 0) this.processDeath(t, s);
@@ -999,6 +1570,13 @@ const Game = {
     },
 
     resolveDamage: function(t, n, s) {
+        if (this.isExplosionMode()) {
+            if (!t || !t.alive) return;
+            this.log(`🎴 ${t.name} 避开扣血，改为摸 2 张牌`);
+            t.lastAction = '🎴 受压摸2';
+            this.drawCards(t, 2);
+            return;
+        }
         if(t.hero==='MAODIE' && n>1) n=1;
         if (s && s.hero === 'MIAOMIAO' && s.id !== t.id && (s.seedUses || 0) < 2) {
             s.seedUses = (s.seedUses || 0) + 1;
@@ -1010,6 +1588,7 @@ const Game = {
             this.updateAll();
             return;
         }
+        this.recordDamage(s, t, n);
         t.hp -= n; 
         this.log(`💥 ${t.name} 受到 ${n}点伤害`);
         t.lastAction = `💥 扣血(-${n})`;
@@ -1025,6 +1604,7 @@ const Game = {
             t.timeMachineUsed = true;
             t.hand = [];
             t.hp = Math.min(3, t.maxHp);
+            this.recordHeal(t, t.hp);
             this.drawCards(t, 2);
             this.log(`⏱️ ${t.name} 发动时光机，回复至${t.hp}血并摸两张牌`);
             t.lastAction = '⏱️ 时光机';
@@ -1034,12 +1614,18 @@ const Game = {
     },
     
     processDeath: function(v, s) {
-        if (v.hero === 'TOM') {
+        if (v.hero === 'TOM' && !v.explosionKilled) {
             v.maxHp = Math.max(0, v.maxHp - 2);
             if (v.maxHp > 0) {
                 v.hp = v.maxHp;
                 v.alive = true;
-                v.hand = [];
+                if (this.gameState.teamMode) {
+                    let team = this.getTeam(v.teamId);
+                    if (team) team.hand = [];
+                    this.syncTeamHands();
+                } else {
+                    v.hand = [];
+                }
                 this.drawCards(v, 2);
                 this.queueSound('TOM');
                 this.log(`🧪 ${v.name} 发动不死，血量上限降至 ${v.maxHp} 并复活`);
@@ -1060,8 +1646,44 @@ const Game = {
         if (this.gameState.pendingAction && this.gameState.pendingAction.targetId === v.id) this.gameState.pendingAction = null;
         
         if (s && s.alive && s.id !== v.id) {
-            if (v.role === '反骨喵') { this.log(`💰 击杀反骨喵，摸 2 张牌！`); this.drawCards(s, 2); }
+            this.ensureStats(s).kills++;
+            if (this.isExplosionMode()) {
+                this.drawSafeNonBomb(s);
+            }
+            else if (v.role === '反骨喵') { this.log(`💰 击杀反骨喵，摸 2 张牌！`); this.drawCards(s, 2); }
             else if (v.role === '护驾喵' && s.role === '喵皇') { this.log(`🚫 喵皇误杀护驾喵，弃光手牌！`); s.hand = []; }
+        }
+
+        if (this.isExplosionMode()) {
+            const finishExplosionDeath = () => {
+                if (this.gameState.gameOver) return;
+                let alive = this.gameState.players.filter(x => x.alive);
+                if (alive.length <= 1) {
+                    this.finishGame(`${alive[0]?.name || '最后一只求生猫'} 活到了最后，爆炸猫窝获胜！`);
+                    return;
+                }
+                this.updateAll();
+                if (this.gameState.turnIdx === v.id) this.nextTurn();
+            };
+            if (v.explosionKilled) {
+                this.updateAll();
+                setTimeout(finishExplosionDeath, 2200);
+                return;
+            }
+            finishExplosionDeath();
+            return;
+        }
+
+        if (this.gameState.teamMode) {
+            let loserTeam = v.teamId;
+            if (this.getTeamAlive(loserTeam).length === 0) {
+                let winner = this.getTeam(loserTeam === 0 ? 1 : 0);
+                this.finishGame(`${winner?.name || '对方猫队'} 全灭对手，3v3 获胜！`);
+                return;
+            }
+            this.updateAll();
+            if (this.gameState.turnIdx === v.id) this.nextTurn();
+            return;
         }
         
         let k = this.gameState.players.find(x => x.role === '喵皇');
@@ -1075,10 +1697,37 @@ const Game = {
         if (this.gameState.turnIdx === v.id) this.nextTurn();
     },
 
+    buildEndAwards: function(message) {
+        let players = this.gameState.players || [];
+        let liveNames = players.filter(p => p.alive).map(p => p.name).join('、') || '无人';
+        const best = (label, pick, format) => {
+            let sorted = players
+                .map(p => ({ p, value: pick(this.ensureStats(p), p) || 0 }))
+                .sort((a, b) => b.value - a.value);
+            let top = sorted[0];
+            if (!top || top.value <= 0) return '';
+            return `<div class="award-row"><span>${this.escapeHTML(label)}</span><strong>${this.escapeHTML(format(top.p, top.value))}</strong></div>`;
+        };
+        let rows = [
+            best('最会哈气', s => s.damage, (p, v) => `${p.name} 造成${v}点伤害`),
+            best('最能苟', s => s.taken, (p, v) => `${p.name} 扛了${v}点伤害`),
+            best('保命大师', s => s.dodges, (p, v) => `${p.name} 闪了${v}次`),
+            best('全场最佳背刺', s => s.kills, (p, v) => `${p.name} 带走${v}只猫`),
+            best('回血担当', s => s.heals, (p, v) => `${p.name} 回了${v}点血`),
+            best('首哈猫', s => s.firstBlood ? 1 : 0, p => `${p.name} 抢到第一滴血`)
+        ].filter(Boolean).join('');
+        return `
+            <div class="end-summary">
+                <div class="end-result">${this.escapeHTML(message)}</div>
+                <div class="end-mode">${this.escapeHTML(this.getModeLabel())} · 存活：${this.escapeHTML(liveNames)}</div>
+                <div class="award-list">${rows || '<div class="award-row"><span>本局很和平</span><strong>大家都很克制</strong></div>'}</div>
+            </div>`;
+    },
+
     finishGame: function(message) {
         this.gameState.pendingAction = null;
         this.gameState.aoeState = null;
-        this.gameState.gameOver = { message };
+        this.gameState.gameOver = { message, awardsHTML: this.buildEndAwards(message) };
         this.log(`🏁 ${message}`);
         this.updateAll();
     },
@@ -1093,9 +1742,18 @@ const Game = {
     startAOE: function(source, type) {
         let q = [];
         let count = this.gameState.players.length;
+        if (this.gameState.teamMode) {
+            let activeEnemy = this.getOpponentActive(source.teamId);
+            if (activeEnemy) q.push(activeEnemy.id);
+            this.gameState.aoeState = { sourceId: source.id, type: type, queue: q };
+            this.queueSound(type === 'aoe' ? 'HISS' : 'BARK');
+            this.processAOEQueue();
+            return;
+        }
         for (let i = 1; i < count; i++) {
             let idx = (source.id + i) % count;
-            if (this.gameState.players[idx].alive) q.push(this.gameState.players[idx].id);
+            let target = this.gameState.players[idx];
+            if (target.alive && (!this.gameState.teamMode || target.teamId !== source.teamId)) q.push(target.id);
         }
         this.gameState.aoeState = { sourceId: source.id, type: type, queue: q };
         this.queueSound(type === 'aoe' ? 'HISS' : 'BARK');
@@ -1126,33 +1784,65 @@ const Game = {
     },
 
     confirmHero: function() {
-        if (!this.selectedHeroId) return;
+        if (this.battleMode === 'team3') {
+            if (this.selectedHeroIds.length !== 3) return;
+        } else if (!this.selectedHeroId) return;
         document.getElementById('btn-confirm-hero').disabled = true;
         if (this.mode === 'SP') this.startSPGame();
         else {
             document.getElementById('wait-msg').innerText = "等待队友...";
-            Net.sendSelectHero(this.selectedHeroId);
+            Net.sendSelectHero(this.battleMode === 'team3' ? this.selectedHeroIds.slice(0, 3) : this.selectedHeroId);
         }
     },
 
     renderHeroSelect: function() {
         this.closePopups();
         this.selectedHeroId = null;
+        this.selectedHeroIds = [];
         let confirmBtn = document.getElementById('btn-confirm-hero');
         if (confirmBtn) confirmBtn.disabled = true;
-        this.setTx('ready-target-count', this.mode === 'SP' ? this.spPlayerCount : Net.targetPlayers);
-        this.setTx('ready-count-disp', 0);
+        this.setTx('ready-target-count', this.mode === 'SP' ? (this.battleMode === 'team3' ? 3 : this.spPlayerCount) : (this.battleMode === 'team3' ? 3 : Net.targetPlayers));
+        this.setTx('ready-count-disp', this.mode === 'SP' && this.battleMode !== 'team3' ? Math.max(0, this.spPlayerCount - 1) : 0);
+        let title = document.querySelector('#screen-select h3');
+        if (title) title.innerText = this.battleMode === 'team3' ? '选择三只猫将' : '选择猫将';
+        let confirmText = document.getElementById('btn-confirm-hero');
+        if (confirmText) confirmText.innerText = this.battleMode === 'team3' ? '确认猫队' : '确认领养';
         this.setTx('wait-msg', '');
         let c = document.getElementById('hero-list'); c.innerHTML = '';
         Object.values(HEROES).forEach(h => {
+            let meta = this.getHeroMeta(h.id);
             let d = document.createElement('div'); d.className = 'hero-card';
             d.onclick = () => {
-                document.querySelectorAll('.hero-card').forEach(e => e.classList.remove('selected'));
-                d.classList.add('selected');
-                this.selectedHeroId = h.id;
-                document.getElementById('btn-confirm-hero').disabled = false;
+                if (this.battleMode === 'team3') {
+                    if (this.selectedHeroIds.includes(h.id)) {
+                        this.selectedHeroIds = this.selectedHeroIds.filter(id => id !== h.id);
+                        d.classList.remove('selected');
+                    } else if (this.selectedHeroIds.length < 3) {
+                        this.selectedHeroIds.push(h.id);
+                        d.classList.add('selected');
+                    } else {
+                        this.showNotice('猫队已经满三只了，先取消一只再换。');
+                    }
+                    this.setTx('ready-count-disp', this.selectedHeroIds.length);
+                    document.getElementById('btn-confirm-hero').disabled = this.selectedHeroIds.length !== 3;
+                } else {
+                    document.querySelectorAll('.hero-card').forEach(e => e.classList.remove('selected'));
+                    d.classList.add('selected');
+                    this.selectedHeroId = h.id;
+                    if (this.mode === 'SP') this.setTx('ready-count-disp', this.spPlayerCount);
+                    document.getElementById('btn-confirm-hero').disabled = false;
+                }
             };
-            d.innerHTML = `<img src="${h.img}"><div class="hero-name">${h.name}</div><div class="hero-desc">${h.desc}</div>`;
+            d.innerHTML = `
+                <img src="${this.escapeHTML(h.img)}">
+                <div class="hero-name">${this.escapeHTML(h.name)}</div>
+                <div class="hero-title">${this.escapeHTML(meta.vibe)}</div>
+                <div class="hero-tags">
+                    <span>${this.escapeHTML(meta.level)}</span>
+                    ${meta.tags.map(tag => `<span>${this.escapeHTML(tag)}</span>`).join('')}
+                </div>
+                <div class="hero-hook">${this.escapeHTML(meta.hook)}</div>
+                <div class="hero-desc">${this.escapeHTML(h.desc)}</div>`;
             c.appendChild(d);
         });
         this.showScreen('screen-select');
@@ -1164,27 +1854,82 @@ const Game = {
         Net.sendAction('END_TURN', {});
     },
 
+    handleSurrenderClick: function() {
+        let me = this.gameState.players.find(p => p.id === this.myId);
+        if (this.gameState.teamMode) me = this.getControlledPlayer(this.gameState);
+        if (!me || me.isBot || !me.alive || this.gameState.gameOver) return;
+        if (!confirm('确定要投降吗？这只猫会直接退场。')) return;
+        this.uiPrompt = null;
+        this.awaitingSurrenderChoice = true;
+        Net.sendAction('SURRENDER', {});
+        if (this.mode !== 'MP' || Net.isHost) this.awaitingSurrenderChoice = false;
+    },
+
+    showAfterSurrenderPrompt: function() {
+        this.showPrompt('投降成功', '要留下观战，还是直接退出？', [
+            { text: '观战', cls: 'primary', cb: () => this.enterSpectatorMode() },
+            { text: '退出', cls: 'danger', cb: () => location.reload() }
+        ]);
+    },
+
+    enterSpectatorMode: function() {
+        this.isSpectating = true;
+        this.uiPrompt = null;
+        let me = this.gameState.players.find(p => p.id === this.myId);
+        if (me) me.hand = [];
+        this.renderGame(this.gameState);
+    },
+
     renderGame: function(state) {
         this.gameState = state; 
+        this.battleMode = state.battleMode || (state.teamMode ? 'team3' : 'classic');
+        this.syncTeamHands(state);
         if (this.mode === 'MP' && !Net.isHost && Net.peer && Net.peer.id) {
-            let checkMe = state.players.find(p => p.peerId === Net.peer.id);
-            if(checkMe) this.myId = checkMe.id;
+            if (state.teamMode) {
+                let team = (state.teams || []).find(t => t.peerId === Net.peer.id);
+                if (team) this.myTeamId = team.id;
+            } else {
+                let checkMe = state.players.find(p => p.peerId === Net.peer.id);
+                if(checkMe) this.myId = checkMe.id;
+            }
         }
 
         let me = state.players.find(p => p.id === this.myId);
+        if (state.teamMode) me = this.getControlledPlayer(state);
         if (!me) return;
+        this.myId = me.id;
+        if (this.awaitingSurrenderChoice && !me.alive && !state.gameOver) {
+            this.awaitingSurrenderChoice = false;
+            this.uiPrompt = {
+                title: '投降成功',
+                msg: '要留下观战，还是直接退出？',
+                buttons: [
+                    { text: '观战', cls: 'primary', cb: () => this.enterSpectatorMode() },
+                    { text: '退出', cls: 'danger', cb: () => location.reload() }
+                ]
+            };
+        }
         if ((state.soundSeq || 0) > this.soundSeqSeen) {
             this.soundSeqSeen = state.soundSeq || 0;
             this.playSound(state.soundType);
         }
+        if ((state.explosionFxSeq || 0) > this.explosionSeqSeen) {
+            this.explosionSeqSeen = state.explosionFxSeq || 0;
+            this.showExplosionBanner({ name: state.explosionFxPlayerName || '求生猫' });
+        }
 
         this.setTx('ui-my-role', me.role);
-        this.setTx('ui-my-hero', HEROES[me.hero]?.name || '');
+        this.setTx('ui-my-role', state.teamMode ? `${this.getTeam(me.teamId)?.name || '猫队'} · ${me.role}` : me.role);
+        this.setTx('ui-my-hero', state.teamMode ? `${HEROES[me.hero]?.name || ''}（共享手牌）` : (HEROES[me.hero]?.name || ''));
         this.setTx('ui-my-hp', `${"♥".repeat(Math.max(0, me.hp)) || "💀"} / ${me.maxHp}`);
         this.setTx('ui-my-hand-count', me.hand.length);
         this.setTx('ui-maodie-stack', me.hero === 'MAODIE' ? `🐾 耄耋哈气 ${me.hissStack || 0}/5` : '');
         let mySeedTotal = Object.values(me.seeds || {}).reduce((a, b) => a + Number(b || 0), 0);
         this.setTx('ui-seed-stack', mySeedTotal ? `🌱 种子 x${mySeedTotal}` : '');
+        let actionHint = this.getActionHint(me, state);
+        let deckInfo = this.getExplosionDeckInfo(state);
+        if (deckInfo && !actionHint.includes('牌堆')) actionHint = `${actionHint} ${deckInfo}`;
+        this.setTx('ui-action-hint', actionHint);
         
         let ds = document.getElementById('drunk-status');
         if(ds) ds.style.display = me.isDrunk ? 'inline' : 'none';
@@ -1208,7 +1953,9 @@ const Game = {
         const pCount = state.players.length;
         const sortedIds = [];
         for (let i = 1; i < pCount; i++) sortedIds.push((this.myId + i) % pCount);
-        const positions = pCount === 2 ? ['pos-top-center'] : ['pos-left-mid', 'pos-top-left', 'pos-top-right', 'pos-right-mid'];
+        const positions = pCount === 2
+            ? ['pos-top-center']
+            : (pCount === 6 ? ['pos-left-mid', 'pos-top-left', 'pos-top-center', 'pos-top-right', 'pos-right-mid'] : ['pos-left-mid', 'pos-top-left', 'pos-top-right', 'pos-right-mid']);
 
         sortedIds.forEach((pid, idx) => {
             let p = state.players.find(x => x.id === pid);
@@ -1221,15 +1968,18 @@ const Game = {
         });
 
         let handDiv = document.getElementById('hand-container'); handDiv.innerHTML = '';
-        this.renderHandSkillControls(handDiv, me, state);
-        me.hand.forEach((c, idx) => {
+        let hideHandForSpectator = this.isSpectating && (!me.alive || state.gameOver);
+        handDiv.style.display = hideHandForSpectator ? 'none' : 'flex';
+        if (!hideHandForSpectator) this.renderHandSkillControls(handDiv, me, state);
+        if (!hideHandForSpectator) me.hand.forEach((c, idx) => {
             let el = document.createElement('div');
             let sunSelected = this.uiSunDiscard && this.uiSunDiscard.selected.includes(idx);
             let sunLocked = this.uiSunDiscard && (this.uiSunDiscard.locked || [this.uiSunDiscard.cardIdx]).includes(idx);
             let baibianDiscardPick = this.uiBaibianCardIdx !== null && this.uiBaibianCardIdx !== undefined && idx !== this.uiBaibianCardIdx;
-            el.className = `card-hand ${idx === this.uiSelectedCardIdx || sunSelected ? 'selected' : ''} ${this.isDiscardPhase || baibianDiscardPick || (this.uiSunDiscard && !sunLocked) ? 'discard-mode' : ''}`;
+            let rec = this.getRecommendation(me, c, state);
+            el.className = `card-hand ${rec ? 'recommended' : ''} ${idx === this.uiSelectedCardIdx || sunSelected ? 'selected' : ''} ${this.isDiscardPhase || baibianDiscardPick || (this.uiSunDiscard && !sunLocked) ? 'discard-mode' : ''}`;
             el.style.backgroundImage = c.img ? `url('${c.img}')` : 'none';
-            el.innerHTML = `<span class="card-suit ${this.escapeHTML(c.color)}">${this.escapeHTML(c.suit)}</span><div class="card-text-overlay">${this.escapeHTML(c.name)}</div>`;
+            el.innerHTML = `<span class="card-suit ${this.escapeHTML(c.color)}">${this.escapeHTML(c.suit)}</span>${rec ? `<div class="recommend-badge ${this.escapeHTML(rec.tone)}">${this.escapeHTML(rec.text)}</div>` : ''}<div class="card-text-overlay">${this.escapeHTML(c.name)}</div>`;
             el.onpointerdown = () => {
                 clearTimeout(this.uiLongPressTimer);
                 this.uiLongPressTimer = setTimeout(() => {
@@ -1262,9 +2012,38 @@ const Game = {
         if (state.gameOver) {
             this.setDisp('response-panel', 'block');
             this.setTx('resp-title', '游戏结束');
-            this.setTx('resp-msg', state.gameOver.message);
+            let msg = document.getElementById('resp-msg');
+            if (msg) msg.innerHTML = state.gameOver.awardsHTML || this.escapeHTML(state.gameOver.message);
             let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
             this.addBtn(btns, '回到主菜单', true, 'primary', () => location.reload());
+            return;
+        }
+
+        if (state.teamMode && state.initialActivePick) {
+            let team = (state.teams || []).find(t => t.id === this.myTeamId);
+            if (team && (team.activeId === null || team.activeId === undefined)) {
+                let alive = state.players.filter(p => p.teamId === this.myTeamId && p.alive);
+                this.setDisp('response-panel', 'block');
+                this.setTx('resp-title', '选择首发猫');
+                this.setTx('resp-msg', '双方都选好首发猫后，第一回合才会开始。');
+                let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
+                alive.forEach(p => this.addBtn(btns, `${HEROES[p.hero]?.name || p.name} ${p.hp}/${p.maxHp}`, true, 'primary', () => Net.sendAction('CHOOSE_ACTIVE', { playerId: p.id })));
+                return;
+            }
+            this.setDisp('response-panel', 'block');
+            this.setTx('resp-title', '等待首发');
+            this.setTx('resp-msg', '你已选好首发猫，等待对方选择。');
+            let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
+            return;
+        }
+
+        if (state.teamMode && state.awaitTeamPick && state.turnTeamId === this.myTeamId && !this.uiPrompt) {
+            let alive = state.players.filter(p => p.teamId === this.myTeamId && p.alive);
+            this.setDisp('response-panel', 'block');
+            this.setTx('resp-title', '选择出战猫');
+            this.setTx('resp-msg', '本回合选择一只猫上场行动。只能攻击对方当前上场猫。');
+            let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
+            alive.forEach(p => this.addBtn(btns, `${HEROES[p.hero]?.name || p.name} ${p.hp}/${p.maxHp}`, true, 'primary', () => Net.sendAction('CHOOSE_ACTIVE', { playerId: p.id })));
             return;
         }
 
@@ -1278,6 +2057,28 @@ const Game = {
         } else if (state.pendingAction && state.pendingAction.targetId === this.myId) {
             this.setDisp('response-panel', 'block');
             let btns = document.getElementById('resp-btns'); btns.innerHTML = '';
+            if (state.pendingAction.type === 'DRAW_CHOICE') {
+                this.setTx('resp-title', '选择摸牌');
+                this.setTx('resp-msg', `${this.getExplosionDeckInfo(state)}。你要冒多大风险？`);
+                this.addBtn(btns, `摸 1 张（爆炸 ${this.getExplosionDrawRisk(1, state)}%）`, true, 'success', () => Net.sendResp('DRAW1'));
+                this.addBtn(btns, `摸 2 张（爆炸 ${this.getExplosionDrawRisk(2, state)}%）`, true, 'primary', () => Net.sendResp('DRAW2'));
+                this.addBtn(btns, `摸 3 张（爆炸 ${this.getExplosionDrawRisk(3, state)}%）`, true, 'danger', () => Net.sendResp('DRAW3'));
+                return;
+            }
+            if (state.pendingAction.type === 'EXPLOSION') {
+                this.setTx('resp-title', '猫砂盆爆炸！');
+                this.setTx('resp-msg', '你已经打出【埋屎】免死。选择把爆炸埋回哪里。');
+                this.addBtn(btns, '放回第一张', true, 'danger', () => Net.sendResp('TOP1'));
+                this.addBtn(btns, '放回第三张', true, 'warn', () => Net.sendResp('TOP3'));
+                this.addBtn(btns, '放回第五张', true, 'primary', () => Net.sendResp('TOP5'));
+                this.addBtn(btns, '放到牌底', true, 'success', () => Net.sendResp('BOTTOM'));
+                return;
+            }
+            if (state.pendingAction.type === 'BOT_EXPLOSION_DEATH') {
+                this.setTx('resp-title', '猫砂盆爆炸！');
+                this.setTx('resp-msg', `${me.name} 没有【埋屎】，正在退场...`);
+                return;
+            }
             let copy = this.getResponseCopy(state.pendingAction, me);
             this.setTx('resp-title', copy.title);
             this.setTx('resp-msg', copy.msg);
@@ -1323,7 +2124,7 @@ const Game = {
                 if (this.uiSelectedCardIdx === idx) { this.uiSelectedCardIdx = -1; this.uiVirtualPlay = null; }
                 else {
                     this.uiSelectedCardIdx = idx;
-                    if (['heal','buff','aoe','bark','sun'].includes(c.type)) {
+                    if (['heal','buff','aoe','bark','sun','peek'].includes(c.type)) {
                         this.openUseCardPrompt(me, c, idx);
                     }
                 }
@@ -1352,6 +2153,10 @@ const Game = {
             }
             buttons.push({ text: '取消', cls: 'danger', cb: () => { this.uiPrompt = null; this.uiSelectedCardIdx = -1; this.renderGame(this.gameState); } });
             this.showPrompt('使用【午后阳光】', '请选择要弃置的牌数。弃至少两张会回复1点体力。', buttons);
+            return;
+        }
+        if (card.type === 'peek') {
+            this.openPeekPrompt(idx);
             return;
         }
         this.showPrompt('使用卡牌', `确定使用【${card.name}】吗？`, [
@@ -1424,7 +2229,10 @@ const Game = {
             dismantle: '锦囊牌',
             steal: '锦囊牌',
             nullify: '锦囊牌',
-            sun: '锦囊牌'
+            sun: '锦囊牌',
+            peek: '爆炸猫窝',
+            defuse: '爆炸猫窝',
+            explode: '爆炸猫窝'
         };
         return labels[type] || type || '未知';
     },
@@ -1440,7 +2248,8 @@ const Game = {
 
     renderPlayerCard: function(p, container, isMain, isTurn) {
         let el = document.createElement('div');
-        el.className = `card-player ${isTurn ? 'active-turn' : ''} ${!p.alive ? 'dead' : ''} ${this.uiSelectedCardIdx !== -1 && !isMain ? 'selectable' : ''}`;
+        let activeTeamCat = this.gameState.teamMode && this.isActiveTeamCat(p);
+        el.className = `card-player ${isTurn ? 'active-turn' : ''} ${activeTeamCat ? 'active-team-cat' : ''} ${!p.alive ? 'dead' : ''} ${this.uiSelectedCardIdx !== -1 && !isMain ? 'selectable' : ''}`;
         
         if (!isMain) {
             el.onclick = () => {
@@ -1460,7 +2269,7 @@ const Game = {
 
         let heroImg = HEROES[p.hero] ? `<img src="${this.escapeHTML(HEROES[p.hero].img)}" class="card-player-img">` : '';
         let safeName = this.escapeHTML(p.name);
-        let safeRole = this.escapeHTML(p.role === '喵皇' || !p.alive ? p.role : '???');
+        let safeRole = this.escapeHTML(this.isExplosionMode() ? p.role : (this.gameState.teamMode ? p.role : (p.role === '喵皇' || !p.alive ? p.role : '???')));
         let safeAction = this.escapeHTML(p.lastAction);
         let netStatus = this.mode === 'MP' && !p.isBot ? `<span class="online-dot ${p.disconnected ? 'offline' : 'online'}">${p.disconnected ? '离线' : '在线'}</span>` : '';
         // 强制内联样式，修复非房主看不见黑框问题
@@ -1470,10 +2279,11 @@ const Game = {
             act = `<div class="last-action" style="position:absolute; top:-35px; left:50%; transform:translate(-50%,0); background:orange; color:white; padding:4px 8px; border-radius:6px; font-weight:bold; font-size:12px; z-index:999;">⏳ 等待响应...</div>`;
         }
 
+        let teamBadge = this.gameState.teamMode ? `<div class="team-badge team-${p.teamId}">${this.escapeHTML(this.getTeam(p.teamId)?.name || '')}${activeTeamCat ? ' · 出战中' : ''}</div>` : '';
         let maodieBadge = p.hero === 'MAODIE' ? `<div class="maodie-stack">🐾 哈气 ${p.hissStack || 0}/5</div>` : '';
         let seedTotal = Object.values(p.seeds || {}).reduce((a, b) => a + Number(b || 0), 0);
         let seedBadge = seedTotal ? `<div class="seed-stack">🌱 种子 x${seedTotal}</div>` : '';
-        el.innerHTML = `${act}<div>${safeName} ${netStatus}</div><div class="role-badge">${safeRole}</div>${heroImg}<div class="hp-display">♥ ${Math.max(0, p.hp)}/${p.maxHp}</div>${maodieBadge}${seedBadge}<div>🎴 ${p.hand.length}</div>`;
+        el.innerHTML = `${act}<div>${safeName} ${netStatus}</div><div class="role-badge">${safeRole}</div>${teamBadge}${heroImg}<div class="hp-display">♥ ${Math.max(0, p.hp)}/${p.maxHp}</div>${maodieBadge}${seedBadge}<div>🎴 ${p.hand.length}</div>`;
         container.appendChild(el);
     },
 

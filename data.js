@@ -10,9 +10,12 @@ const CARDS = {
     CATNIP: { name: "猫薄荷", type: "buff", text: "猫薄荷", desc: "辅助牌。本回合下一张【哈气】伤害+1；濒死时可自救回复1血。", img: "assets/cards/catnip.png" },
     FIGHT: { name: "猫猫互殴", type: "duel", text: "互殴", desc: "锦囊牌。与目标轮流出【哈气】，输者受到1点伤害。", img: "assets/cards/fight.png" },
     CUP: { name: "推倒水杯", type: "dismantle", text: "推水杯", desc: "锦囊牌。弃置一名其他角色区域内的一张牌。", img: "assets/cards/cup.png" },
-    PUNCH: { name: "这一爪", type: "steal", text: "这一爪", desc: "锦囊牌。获得距离为1的一名其他角色区域内的一张牌。", img: "assets/cards/punch.png" },
+    PUNCH: { name: "这一爪", type: "steal", text: "这一爪", desc: "锦囊牌。获得一名其他角色区域内的一张牌。", img: "assets/cards/punch.png" },
     EARS: { name: "飞机耳", type: "nullify", text: "飞机耳", desc: "锦囊牌。抵消锦囊牌的效果。", img: "assets/cards/ears.png" },
-    SUN: { name: "午后阳光", type: "sun", text: "阳光", desc: "锦囊牌。出牌阶段对自己使用。弃置任意张牌，然后摸等量的牌；若弃置至少两张牌，则回复1点体力。", img: "assets/cards/sun.png" }
+    SUN: { name: "午后阳光", type: "sun", text: "阳光", desc: "锦囊牌。出牌阶段对自己使用。弃置任意张牌，然后摸等量的牌；若弃置至少两张牌，则回复1点体力。", img: "assets/cards/sun.png" },
+    EXPLODE: { name: "猫砂盆爆炸", type: "explode", text: "爆炸", desc: "爆炸猫窝专属。摸到后立即爆炸；只有【埋屎】可以救你。", img: "assets/cards/explode.png" },
+    DEFUSE: { name: "埋屎", type: "defuse", text: "埋屎", desc: "爆炸猫窝专属。摸到【猫砂盆爆炸】时打出，免死并把爆炸放回牌堆。", img: "assets/cards/defuse.png" },
+    PEEK: { name: "闻一下", type: "peek", text: "闻一下", desc: "爆炸猫窝专属。查看牌堆顶3张，并可以调整它们的顺序。", img: "assets/cards/peek.png" }
 };
 
 const HEROES = {
