@@ -145,6 +145,11 @@
                     <button class="btn btn-warn btn-sm" onclick="Game.nextBGM()">⏭️</button>
                     <span id="bgm-title" style="font-size:10px; margin-left: 5px;">BGM</span>
                 </div>
+                <div id="net-quality-panel" class="net-quality-panel" style="display:none;">
+                    <div class="net-quality-title">联机质量</div>
+                    <div id="net-quality-main">--</div>
+                    <div id="net-quality-sub">--</div>
+                </div>
                 <div class="turn-controls">
                     <button id="btn-surrender" class="btn btn-danger" onclick="Game.handleSurrenderClick()">投降</button>
                     <button id="btn-end-turn" class="btn btn-primary" onclick="Game.handleEndTurnClick()">结束回合</button>
@@ -160,7 +165,9 @@
     </div>
 
     <script src="data.js"></script>
+    <script src="net-config.js"></script>
     <script src="net.js"></script>
     <script src="game.js"></script>
+    <script src="game-ui-helpers.js"></script>
 </body>
 </html>

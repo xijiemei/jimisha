@@ -11,21 +11,31 @@ const Net = {
     targetPlayers: 5,
     battleMode: 'classic',
     broadcastTimer: null,
-    broadcastDelay: 50,
-    config: {
+    broadcastDelay: 20,
+    heartbeatTimer: null,
+    heartbeatInterval: 5000,
+    heartbeatTimeout: 20000,
+    qualityTimer: null,
+    qualityProbeInterval: 3000,
+    quality: {
+        rttMs: null,
+        avgGuestRttMs: null,
+        lastSyncBytes: 0,
+        lastSyncAt: 0,
+        lastSentBytes: 0,
+        lastProbeAt: 0
+    },
+    config: window.KIMI_NET_CONFIG || {
         debug: 1,
         config: {
             iceServers: [
-                { urls: "stun:stun.relay.metered.ca:80" },
-                { urls: "turn:global.relay.metered.ca:80", username: "ad60583412217f8af430d3b0", credential: "Au7tJr1/DnuwhcYz" },
-                { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: "ad60583412217f8af430d3b0", credential: "Au7tJr1/DnuwhcYz" },
-                { urls: "turn:global.relay.metered.ca:443", username: "ad60583412217f8af430d3b0", credential: "Au7tJr1/DnuwhcYz" },
-                { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: "ad60583412217f8af430d3b0", credential: "Au7tJr1/DnuwhcYz" }
+                { urls: "stun:stun.relay.metered.ca:80" }
             ]
         }
     },
 
     setupMP: function() {
+        Game.preloadAssets();
         Game.showScreen('screen-mp-login');
         this.setStatus('net-status', '不填猫窝 ID 会自动生成短 ID，也可以自己设置。');
     },
@@ -55,11 +65,12 @@ const Net = {
             Game.battleMode = this.battleMode;
             Game.mode = 'MP';
             Game.myId = 0;
-            this.mpPlayers = [{ id: 0, name, peerId: id, ready: false, isHost: true, online: true }];
+            this.mpPlayers = [{ id: 0, name, peerId: id, ready: false, isHost: true, online: true, lastSeen: Date.now() }];
             Game.showScreen('screen-mp-lobby');
             this.setLobbyRoomInfo(id, roomName, true);
             this.setStatus('lobby-status', '猫窝已建好，等朋友加入后就能发车。', 'success');
             this.updateLobby();
+            this.startHeartbeat();
             this.peer.on('connection', c => this.bindHostConnection(c));
         });
     },
@@ -101,6 +112,7 @@ const Net = {
             this.suppressHostClose = false;
             c.send({ type: 'JOIN', name, peerId });
             this.setStatus('net-status', '已连上猫窝，等待房主确认...', 'warn');
+            this.startQualityProbe();
         });
         c.on('data', d => this.handleClientData(d));
         c.on('close', () => this.handleHostDisconnected());
@@ -124,6 +136,18 @@ const Net = {
     handleHostData: function(c, d) {
         if (!d || typeof d.type !== 'string') return;
         let p = this.mpPlayers.find(x => x.peerId === c.peer);
+        if (p) p.lastSeen = Date.now();
+
+        if (d.type === 'PONG') {
+            if (p && d.ts) p.rttMs = Date.now() - d.ts;
+            this.updateQualityPanel();
+            return;
+        }
+
+        if (d.type === 'NET_PING') {
+            this.send(c, { type: 'NET_PONG', ts: d.ts });
+            return;
+        }
 
         if (d.type === 'JOIN') {
             this.acceptJoin(c, d);
@@ -180,6 +204,14 @@ const Net = {
             Game.showScreen('screen-mp-login');
         } else if (d.type === 'NOTICE') {
             this.setAllStatus(d.message || '', d.tone || 'warn');
+        } else if (d.type === 'PING') {
+            if (this.conn && this.conn.open) this.conn.send({ type: 'PONG', ts: d.ts });
+        } else if (d.type === 'NET_PONG') {
+            if (d.ts) {
+                this.quality.rttMs = Date.now() - d.ts;
+                this.quality.lastProbeAt = Date.now();
+            }
+            this.updateQualityPanel();
         } else if (d.type === 'HERO_REJECT') {
             this.setHeroWaitMessage(d.reason || '这个猫将已经被领养了，换一只吧。', true);
         } else if (d.type === 'LOBBY') {
@@ -209,6 +241,8 @@ const Net = {
         } else if (d.type === 'SELECT_COUNT') {
             this.updateSelectCountUI(d.count || 0);
         } else if (d.type === 'GAME') {
+            this.recordInboundGame(d);
+            Game.preloadAssets();
             Game.gameState = d.state;
             Game.showScreen('screen-game');
             if (Game.gameState.teamMode) {
@@ -236,6 +270,7 @@ const Net = {
         if (existing) {
             existing.name = this.sanitizeName(d.name, existing.name || '访客');
             existing.online = true;
+            existing.lastSeen = Date.now();
             this.send(c, { type: 'JOIN_OK', roomId: this.roomId, roomName: this.roomName, id: existing.id });
             this.updateLobby();
             return;
@@ -243,7 +278,7 @@ const Net = {
 
         let newId = this.mpPlayers.length;
         let name = this.sanitizeName(d.name, '访客');
-        this.mpPlayers.push({ id: newId, name, peerId: c.peer, ready: false, isHost: false, online: true });
+        this.mpPlayers.push({ id: newId, name, peerId: c.peer, ready: false, isHost: false, online: true, lastSeen: Date.now() });
         this.send(c, { type: 'JOIN_OK', roomId: this.roomId, roomName: this.roomName, id: newId });
         this.setStatus('lobby-status', `${name} 进窝了。`, 'success');
         this.updateLobby();
@@ -265,15 +300,16 @@ const Net = {
         this.updateSelectCount();
     },
 
-    handleGuestLeft: function(c, reason) {
+    handleGuestLeft: function(c, reason, force) {
         if (!this.isHost || !c) return;
         this.connections = this.connections.filter(item => item !== c);
-        if (this.connections.some(item => item.peer === c.peer && item.open)) return;
+        if (!force && this.connections.some(item => item.peer === c.peer && item.open)) return;
 
         let lobbyPlayer = this.mpPlayers.find(p => p.peerId === c.peer && !p.isBot);
         if (!lobbyPlayer) return;
 
         let gamePlayer = Game.gameState.players.find(p => p.peerId === c.peer);
+        if (lobbyPlayer.online === false && gamePlayer && gamePlayer.disconnected) return;
         if (Game.gameState.started && gamePlayer) {
             lobbyPlayer.online = false;
             gamePlayer.disconnected = true;
@@ -293,6 +329,7 @@ const Net = {
 
     handleHostDisconnected: function() {
         if (this.isHost) return;
+        this.stopQualityProbe();
         if (this.suppressHostClose) {
             this.suppressHostClose = false;
             return;
@@ -304,6 +341,7 @@ const Net = {
 
     updateLobby: function() {
         this.updateLobbyUI();
+        this.updateQualityPanel();
         if (this.isHost) {
             document.getElementById('host-controls').style.display = 'block';
             document.getElementById('guest-msg').style.display = 'none';
@@ -460,8 +498,16 @@ const Net = {
         if (!this.isHost) return;
         let fullState = this.clone(Game.gameState);
         Game.renderGame(fullState);
+        this.updateQualityPanel();
         this.connections.forEach(c => {
-            if (c.open) this.send(c, { type: 'GAME', state: this.sanitizeStateForPeer(fullState, c.peer) });
+            if (c.open) {
+                let message = {
+                    type: 'GAME',
+                    state: this.sanitizeStateForPeer(fullState, c.peer),
+                    net: this.getPeerQuality(c.peer)
+                };
+                this.send(c, message);
+            }
         });
     },
 
@@ -522,6 +568,13 @@ const Net = {
 
     sanitizeStateForPeer: function(state, peerId) {
         let s = this.clone(state);
+        if (Array.isArray(s.deck)) {
+            s.deckMeta = {
+                total: s.deck.length,
+                bombs: s.deck.filter(card => card && card.type === 'explode').length
+            };
+            s.deck = [];
+        }
         if (s.teamMode && Array.isArray(s.teams)) {
             s.teams.forEach(t => {
                 if (t.peerId !== peerId) {
@@ -565,10 +618,91 @@ const Net = {
 
     send: function(c, message) {
         try {
-            if (c && c.open) c.send(message);
+            if (c && c.open) {
+                if (message && message.type === 'GAME') {
+                    let bytes = this.estimateMessageBytes(message);
+                    this.quality.lastSentBytes = bytes;
+                    if (message.net) message.net.bytes = bytes;
+                }
+                c.send(message);
+            }
         } catch (e) {
             console.warn('Send failed', e);
         }
+    },
+
+    estimateMessageBytes: function(message) {
+        try {
+            return new Blob([JSON.stringify(message)]).size;
+        } catch (e) {
+            try { return JSON.stringify(message).length; } catch (err) { return 0; }
+        }
+    },
+
+    recordInboundGame: function(message) {
+        this.quality.lastSyncBytes = message?.net?.bytes || this.estimateMessageBytes(message);
+        this.quality.lastSyncAt = Date.now();
+        if (message?.net?.rttMs !== undefined && message.net.rttMs !== null) this.quality.rttMs = message.net.rttMs;
+        this.updateQualityPanel();
+    },
+
+    getPeerQuality: function(peerId) {
+        let p = this.mpPlayers.find(item => item.peerId === peerId);
+        return {
+            rttMs: p?.rttMs ?? null,
+            hostAt: Date.now()
+        };
+    },
+
+    getAverageGuestRtt: function() {
+        let values = this.mpPlayers
+            .filter(p => !p.isHost && !p.isBot && p.online !== false && typeof p.rttMs === 'number')
+            .map(p => p.rttMs);
+        if (!values.length) return null;
+        return Math.round(values.reduce((sum, n) => sum + n, 0) / values.length);
+    },
+
+    formatBytes: function(bytes) {
+        if (!bytes) return '0 KB';
+        if (bytes < 1024) return `${bytes} B`;
+        return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+    },
+
+    getLatencyTone: function(ms) {
+        if (ms === null || ms === undefined) return 'warn';
+        if (ms < 120) return 'good';
+        if (ms < 260) return 'warn';
+        return 'bad';
+    },
+
+    updateQualityPanel: function() {
+        let panel = document.getElementById('net-quality-panel');
+        if (!panel) return;
+        if (Game.mode !== 'MP') {
+            panel.style.display = 'none';
+            return;
+        }
+
+        panel.style.display = 'block';
+        let main = document.getElementById('net-quality-main');
+        let sub = document.getElementById('net-quality-sub');
+        let now = Date.now();
+
+        if (this.isHost) {
+            let guests = this.mpPlayers.filter(p => !p.isHost && !p.isBot);
+            let online = guests.filter(p => p.online !== false).length;
+            let avg = this.getAverageGuestRtt();
+            panel.className = `net-quality-panel ${this.getLatencyTone(avg)}`;
+            if (main) main.innerText = avg === null ? `房主 · ${online}/${guests.length} 在线` : `房主 · 平均 ${avg}ms`;
+            if (sub) sub.innerText = `同步 ${this.formatBytes(this.quality.lastSentBytes)} · ${online}/${guests.length} 在线`;
+            return;
+        }
+
+        let rtt = this.quality.rttMs;
+        let age = this.quality.lastSyncAt ? Math.max(0, Math.round((now - this.quality.lastSyncAt) / 1000)) : null;
+        panel.className = `net-quality-panel ${this.getLatencyTone(rtt)}`;
+        if (main) main.innerText = rtt === null || rtt === undefined ? '连接中 · 测速中' : `到房主 ${rtt}ms`;
+        if (sub) sub.innerText = `同步 ${this.formatBytes(this.quality.lastSyncBytes)} · ${age === null ? '--' : `${age}s前`}`;
     },
 
     setLobbyRoomInfo: function(id, roomName, canCopy) {
@@ -592,8 +726,62 @@ const Net = {
         }
     },
 
+    startHeartbeat: function() {
+        if (!this.isHost) return;
+        this.stopHeartbeat();
+        this.heartbeatTimer = setInterval(() => this.checkConnections(), this.heartbeatInterval);
+        this.checkConnections();
+    },
+
+    stopHeartbeat: function() {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+    },
+
+    startQualityProbe: function() {
+        if (this.qualityTimer) clearInterval(this.qualityTimer);
+        this.qualityTimer = setInterval(() => this.sendQualityPing(), this.qualityProbeInterval);
+        this.sendQualityPing();
+    },
+
+    stopQualityProbe: function() {
+        if (this.qualityTimer) {
+            clearInterval(this.qualityTimer);
+            this.qualityTimer = null;
+        }
+    },
+
+    sendQualityPing: function() {
+        if (this.isHost || !this.conn || !this.conn.open) return;
+        this.conn.send({ type: 'NET_PING', ts: Date.now() });
+    },
+
+    checkConnections: function() {
+        if (!this.isHost) return;
+        let now = Date.now();
+        this.connections.forEach(c => {
+            if (c.open) this.send(c, { type: 'PING', ts: now });
+        });
+        this.mpPlayers
+            .filter(p => !p.isHost && !p.isBot && p.online !== false)
+            .forEach(p => {
+                if (!p.lastSeen) p.lastSeen = now;
+                if (now - p.lastSeen > this.heartbeatTimeout) {
+                    let conn = this.connections.find(c => c.peer === p.peerId);
+                    if (conn) {
+                        try { conn.close(); } catch (e) {}
+                    }
+                    this.handleGuestLeft(conn || { peer: p.peerId }, '连接超时', true);
+                }
+            });
+    },
+
     resetSession: function() {
         this.suppressHostClose = true;
+        this.stopHeartbeat();
+        this.stopQualityProbe();
         this.connections.forEach(c => { try { c.close(); } catch (e) {} });
         let oldConn = this.conn;
         this.conn = null;
@@ -611,6 +799,8 @@ const Net = {
         this.roomName = '';
         this.targetPlayers = 5;
         this.battleMode = 'classic';
+        this.quality = { rttMs: null, avgGuestRttMs: null, lastSyncBytes: 0, lastSyncAt: 0, lastSentBytes: 0, lastProbeAt: 0 };
+        this.updateQualityPanel();
         setTimeout(() => { this.suppressHostClose = false; }, 100);
     },
 
