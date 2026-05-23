@@ -7,3 +7,5 @@ window.KIMI_NET_CONFIG = {
     }
 };
 
+// For stricter networks, copy net-config.example.js and add your own private TURN server.
+// Do not publish real TURN usernames or credentials in a public static build.

@@ -10,9 +10,11 @@
 - 联机模式：基于 PeerJS 点对点连接，支持建房、加入房间、房主广播、断线提示和机器人补位。
 - 联机同步：客户端只接收必要的公开状态和自己的手牌；牌堆会以数量/风险摘要同步，减少延迟和信息泄露。
 - 联机质量面板：游戏内会显示到房主的延迟、最近同步包大小、同步时间和在线情况，方便判断卡顿来源。
+- 掉线回座：游戏中掉线会先变红灯并交给机器人托管，使用同一浏览器和昵称重新加入可回到原座位。
 - 角色系统：每只猫有不同血量、技能和角色说明。
 - 卡牌系统：包含攻击、防御、回血、锦囊、爆炸牌、埋屎牌等。
 - 体验元素：角色图片、卡牌图片、音效、BGM、行动提示、结算奖项和移动端适配。
+- 资源优化：默认使用 `assets/optimized/` 中的轻量 JPG 图，原始 PNG 保留在 `assets/` 下便于后续重新导出。
 
 ### 启动方式
 
@@ -45,7 +47,7 @@ window.KIMI_NET_CONFIG = {
 };
 ```
 
-如果需要更稳定的跨网络联机，可以在本地把自己的 TURN 服务加入 `iceServers`。不要把真实 TURN 用户名和密码提交到公开仓库或公开网页中。
+如果需要更稳定的跨网络联机，可以参考 `net-config.example.js`，在本地把自己的 TURN 服务加入 `iceServers`。不要把真实 TURN 用户名和密码提交到公开仓库或公开网页中。
 
 ### 项目结构
 
@@ -66,6 +68,9 @@ assets/             角色图、卡牌图、音效和 BGM
 - 给核心规则加轻量测试：优先覆盖摸牌、死亡结算、爆炸牌、响应流程。
 - 联机发布前需要单独处理 TURN 凭据：推荐由后端临时签发，或只在私有部署中填写。
 - 如果首局图片加载仍慢，可以把 `assets/` 放到更快的静态托管或 CDN；游戏会在菜单阶段提前预热图片。
+- 当前轻量图约 0.77MB，原始 PNG 约 8.04MB；如果要进一步优化，可以换成 WebP/AVIF 导出流程。
+- 双端联机实测请按 `docs/联机测试清单.md` 执行。
+- 基础规则 smoke test 可打开 `tests/smoke-tests.html` 运行。
 - 如果要公开发布，建议固定 PeerJS 依赖来源，或把依赖下载到本地以降低 CDN 风险。
 
 ## English
@@ -78,9 +83,11 @@ Kimi Kill is a browser-based cat card game that mixes hidden-role combat, duel m
 - Multiplayer mode: PeerJS-based peer-to-peer rooms with host broadcast, joining, disconnect notices, and bot filling.
 - Multiplayer sync: clients receive only necessary public state plus their own hands; deck details are reduced to count/risk metadata to lower latency and avoid information leaks.
 - Connection quality panel: the in-game UI shows host latency, recent sync payload size, sync age, and online status to help diagnose lag.
+- Reconnect to seat: disconnected players turn red and are temporarily controlled by a bot; joining again from the same browser and nickname can restore the original seat.
 - Hero system: each cat has unique health, skills, and flavor text.
 - Card system: attack, defense, healing, tactic cards, exploding cards, defuse cards, and more.
 - Presentation: hero art, card art, sound effects, BGM, action hints, end-game awards, and mobile-friendly layout.
+- Asset optimization: the game uses lightweight JPG files under `assets/optimized/` by default, while original PNG files remain under `assets/` for future exports.
 
 ### Running The Game
 
@@ -113,7 +120,7 @@ window.KIMI_NET_CONFIG = {
 };
 ```
 
-For more reliable connectivity across strict networks, add your own TURN server to `iceServers` in a private/local deployment. Do not commit real TURN credentials to a public repository or expose them on a public static site.
+For more reliable connectivity across strict networks, copy `net-config.example.js` and add your own TURN server to `iceServers` in a private/local deployment. Do not commit real TURN credentials to a public repository or expose them on a public static site.
 
 ### Project Structure
 
@@ -134,4 +141,7 @@ assets/             Hero images, card images, sound effects, and BGM
 - Add lightweight tests for core rules: drawing, death settlement, explosion cards, and response flows first.
 - Handle TURN credentials separately before publishing multiplayer: use temporary server-issued credentials or private deployment-only values.
 - If first-game image loading is still slow, host `assets/` on faster static storage or a CDN; the game now warms up images from the menu stage.
+- The lightweight images are about 0.77 MB versus about 8.04 MB for the original PNG set; WebP/AVIF export would be the next step for even better compression.
+- Run the two-client multiplayer checklist in `docs/联机测试清单.md`.
+- Open `tests/smoke-tests.html` for basic rule smoke tests.
 - For public releases, consider pinning or vendoring PeerJS instead of relying only on a CDN.

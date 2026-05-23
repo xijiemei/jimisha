@@ -229,7 +229,8 @@ const Game = {
         if (this.pendingLaunchMode === 'MP') {
             let mp = document.getElementById('mp-match-size');
             if (mp) mp.value = value;
-            Net.setupMP();
+            this.selectedMPMode = String(value);
+            Net.setupMP(value);
             return;
         }
         let sp = document.getElementById('sp-match-size');
@@ -737,11 +738,12 @@ const Game = {
 
     createTeamBattlePlayers: function(lobbyPlayers) {
         let players = [];
-        let teams = lobbyPlayers.slice(0, 2).map((lp, teamId) => ({ id: teamId, name: lp.name, peerId: lp.peerId, isBot: !!lp.isBot, hand: [], activeId: null }));
+        let teams = lobbyPlayers.slice(0, 2).map((lp, teamId) => ({ id: teamId, name: lp.name, peerId: lp.peerId, clientId: lp.clientId, isBot: !!lp.isBot, hand: [], activeId: null }));
         lobbyPlayers.slice(0, 2).forEach((lp, teamId) => {
             (lp.hero || []).slice(0, 3).forEach((heroId, slot) => {
                 let p = this.createPlayer(players.length, `${lp.name}-${slot + 1}`, !!lp.isBot);
                 p.peerId = lp.peerId;
+                p.clientId = lp.clientId;
                 p.teamId = teamId;
                 p.teamSlot = slot;
                 p.hero = heroId;
@@ -1694,6 +1696,14 @@ const Game = {
             if (this.gameState.turnIdx === v.id) this.nextTurn();
             return;
         }
+
+        if ((this.gameState.players || []).length === 2) {
+            let alive = this.gameState.players.filter(x => x.alive);
+            if (alive.length <= 1) {
+                this.finishGame(`${alive[0]?.name || '对方'} 获胜！`);
+                return;
+            }
+        }
         
         let k = this.gameState.players.find(x => x.role === '喵皇');
         let r = this.gameState.players.filter(x => x.role === '反骨喵' && x.alive).length;
@@ -1843,7 +1853,7 @@ const Game = {
                 }
             };
             d.innerHTML = `
-                <img src="${this.escapeHTML(h.img)}">
+                <img src="${this.escapeHTML(h.img)}" loading="lazy" decoding="async" onload="this.classList.add('loaded')">
                 <div class="hero-name">${this.escapeHTML(h.name)}</div>
                 <div class="hero-title">${this.escapeHTML(meta.vibe)}</div>
                 <div class="hero-tags">
@@ -1988,7 +1998,7 @@ const Game = {
             let baibianDiscardPick = this.uiBaibianCardIdx !== null && this.uiBaibianCardIdx !== undefined && idx !== this.uiBaibianCardIdx;
             let rec = this.getRecommendation(me, c, state);
             el.className = `card-hand ${rec ? 'recommended' : ''} ${idx === this.uiSelectedCardIdx || sunSelected ? 'selected' : ''} ${this.isDiscardPhase || baibianDiscardPick || (this.uiSunDiscard && !sunLocked) ? 'discard-mode' : ''}`;
-            el.style.backgroundImage = c.img ? `url('${c.img}')` : 'none';
+            el.style.backgroundImage = c.img ? `url('${c.img}'), linear-gradient(135deg, rgba(255,255,255,0.62), rgba(255,224,130,0.22))` : '';
             el.innerHTML = `<span class="card-suit ${this.escapeHTML(c.color)}">${this.escapeHTML(c.suit)}</span>${rec ? `<div class="recommend-badge ${this.escapeHTML(rec.tone)}">${this.escapeHTML(rec.text)}</div>` : ''}<div class="card-text-overlay">${this.escapeHTML(c.name)}</div>`;
             el.onpointerdown = () => {
                 clearTimeout(this.uiLongPressTimer);
@@ -2277,7 +2287,7 @@ const Game = {
             };
         }
 
-        let heroImg = HEROES[p.hero] ? `<img src="${this.escapeHTML(HEROES[p.hero].img)}" class="card-player-img">` : '';
+        let heroImg = HEROES[p.hero] ? `<img src="${this.escapeHTML(HEROES[p.hero].img)}" class="card-player-img" loading="eager" decoding="async" onload="this.classList.add('loaded')">` : '';
         let safeName = this.escapeHTML(p.name);
         let safeRole = this.escapeHTML(this.isExplosionMode() ? p.role : (this.gameState.teamMode ? p.role : (p.role === '喵皇' || !p.alive ? p.role : '???')));
         let safeAction = this.escapeHTML(p.lastAction);

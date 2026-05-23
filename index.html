@@ -6,10 +6,10 @@
     <title>基米杀 v1.1</title>
     <link rel="preconnect" href="https://unpkg.com">
     <link rel="stylesheet" href="style.css">
-    <link rel="preload" as="image" href="assets/heroes/tom.png">
-    <link rel="preload" as="image" href="assets/heroes/duola.png">
-    <link rel="preload" as="image" href="assets/heroes/miaomiao.png">
-    <link rel="preload" as="image" href="assets/cards/sun.png">
+    <link rel="preload" as="image" href="assets/optimized/heroes/tom.jpg">
+    <link rel="preload" as="image" href="assets/optimized/heroes/duola.jpg">
+    <link rel="preload" as="image" href="assets/optimized/heroes/miaomiao.jpg">
+    <link rel="preload" as="image" href="assets/optimized/cards/sun.jpg">
     <script defer src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
 </head>
 <body>
@@ -46,29 +46,35 @@
 
         <div id="screen-menu" class="screen active">
             <input type="hidden" id="sp-match-size" value="5">
-            <button class="btn btn-primary" onclick="Game.openPlayModeSelect('SP')">🤖 单机吸猫</button>
-            <button class="btn btn-success" onclick="Game.openPlayModeSelect('MP')">🌍 联机吸猫</button>
-            <div style="margin-top:20px; font-size:12px; color:#888;">Chrome / Edge 体验最佳</div>
+            <div class="menu-panel">
+                <div class="menu-title">基米杀</div>
+                <div class="menu-subtitle">选玩法，领猫将，开一局轻量猫猫卡牌局。</div>
+                <div class="menu-actions">
+                    <button class="btn btn-primary" onclick="Game.openPlayModeSelect('SP')">🤖 单机吸猫</button>
+                    <button class="btn btn-success" onclick="Game.openPlayModeSelect('MP')">🌍 联机吸猫</button>
+                </div>
+                <div class="menu-note">Chrome / Edge 体验最佳 · 联机前先选玩法</div>
+            </div>
         </div>
 
         <div id="screen-mode-select" class="screen">
             <button class="btn-back" onclick="Game.showScreen('screen-menu')">🏠 返回</button>
             <h3>选择玩法</h3>
-            <div class="mode-grid">
-                <button class="btn btn-primary" onclick="Game.choosePlayMode('5')">经典五猫争霸</button>
-                <button class="btn btn-primary" onclick="Game.choosePlayMode('2')">1v1 极速喵斗</button>
-                <button class="btn btn-primary" onclick="Game.choosePlayMode('team3')">1v1 至尊猫王对决</button>
-                <button class="btn btn-primary" onclick="Game.showExplosionPlayerSelect()">爆炸猫窝</button>
+            <div class="mode-grid mode-grid-rich">
+                <button class="mode-card" onclick="Game.choosePlayMode('5')"><strong>经典五猫争霸</strong><span>身份局，适合完整体验。</span></button>
+                <button class="mode-card" onclick="Game.choosePlayMode('2')"><strong>1v1 极速喵斗</strong><span>快节奏对抗，马上开打。</span></button>
+                <button class="mode-card" onclick="Game.choosePlayMode('team3')"><strong>至尊猫王对决</strong><span>双方各带三只猫轮流出战。</span></button>
+                <button class="mode-card" onclick="Game.showExplosionPlayerSelect()"><strong>爆炸猫窝</strong><span>牌堆危机，摸牌有风险。</span></button>
             </div>
         </div>
 
         <div id="screen-explosion-count" class="screen">
             <button class="btn-back" onclick="Game.showScreen('screen-mode-select')">🏠 返回</button>
             <h3>爆炸猫窝人数</h3>
-            <div class="mode-grid">
-                <button class="btn btn-primary" onclick="Game.choosePlayMode('boom2')">2 人喵局</button>
-                <button class="btn btn-primary" onclick="Game.choosePlayMode('boom3')">3 人喵局</button>
-                <button class="btn btn-primary" onclick="Game.choosePlayMode('boom4')">4 人喵局</button>
+            <div class="mode-grid mode-grid-rich">
+                <button class="mode-card" onclick="Game.choosePlayMode('boom2')"><strong>2 人喵局</strong><span>短局高压，最适合测试。</span></button>
+                <button class="mode-card" onclick="Game.choosePlayMode('boom3')"><strong>3 人喵局</strong><span>节奏均衡，风险更明显。</span></button>
+                <button class="mode-card" onclick="Game.choosePlayMode('boom4')"><strong>4 人喵局</strong><span>更热闹，也更容易爆炸。</span></button>
             </div>
         </div>
 
@@ -82,12 +88,13 @@
         </div>
 
         <div id="screen-mp-login" class="screen">
-            <button class="btn-back" onclick="location.reload()">🏠 返回</button>
+            <button class="btn-back" onclick="Game.openPlayModeSelect('MP')">🏠 返回</button>
             <h3>🌍 喵星中转站</h3>
-            <input type="text" id="mp-username" placeholder="给自己起个喵名" maxlength="8">
-            <br><br>
-            <input type="text" id="mp-room-name" placeholder="房间名字，例如：周五猫局" maxlength="12">
-            <br><br>
+            <p id="mp-mode-label" class="net-status"></p>
+            <div class="room-form">
+                <input type="text" id="mp-username" placeholder="给自己起个喵名" maxlength="8">
+                <input type="text" id="mp-room-name" placeholder="房间名字，例如：周五猫局" maxlength="12">
+            </div>
             <select id="mp-match-size" class="match-size-select" style="display:none;">
                 <option value="5">5人猫窝局</option>
                 <option value="2">1v1 极速喵斗</option>
@@ -96,12 +103,16 @@
                 <option value="boom4">爆炸猫窝 4人</option>
                 <option value="team3">1v1 至尊猫王对决</option>
             </select>
-            <br><br>
-            <input type="text" id="mp-custom-room-id" placeholder="自定义猫窝ID，可不填" maxlength="18" style="width:40%">
-            <button class="btn btn-primary" onclick="Net.createRoom()">建立猫窝</button>
-            <br><br>
-            <input type="text" id="mp-room-id" placeholder="输入猫窝ID" style="width:40%">
-            <button class="btn btn-success" onclick="Net.joinRoom()">钻进猫窝</button>
+            <div class="room-actions">
+                <div>
+                    <input type="text" id="mp-custom-room-id" placeholder="自定义猫窝ID，可不填" maxlength="18">
+                    <button class="btn btn-primary" onclick="Net.createRoom()">建立猫窝</button>
+                </div>
+                <div>
+                    <input type="text" id="mp-room-id" placeholder="输入猫窝ID">
+                    <button class="btn btn-success" onclick="Net.joinRoom()">钻进猫窝</button>
+                </div>
+            </div>
             <p id="net-status" class="net-status">不填猫窝 ID 会自动生成短 ID，也可以自己设置。</p>
         </div>
         
@@ -112,6 +123,7 @@
                 <button id="btn-copy-room" class="btn btn-primary btn-sm" onclick="Net.copyRoomId()" style="display:none;">复制</button>
             </h3>
             <p id="lobby-status" class="net-status"></p>
+            <p id="lobby-mode-label" class="net-status"></p>
             <p>猫咪列表 (<span id="player-count">1</span>/<span id="target-count">5</span>):</p>
             <div class="lobby-grid" id="lobby-list"></div>
             <div id="host-controls" style="display:none; margin-top:20px;">

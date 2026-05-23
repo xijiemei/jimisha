@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>基米杀 Smoke Tests</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 24px; background: #f5f7fa; color: #263238; }
+        h1 { font-size: 22px; }
+        .result { padding: 10px 12px; border-radius: 8px; margin: 8px 0; background: white; border: 1px solid #d7e3ec; }
+        .pass { border-left: 5px solid #2e7d32; }
+        .fail { border-left: 5px solid #d32f2f; }
+        code { background: #eceff1; padding: 1px 4px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>基米杀 Smoke Tests</h1>
+    <div id="summary">Running...</div>
+    <div id="results"></div>
+
+    <script src="../data.js"></script>
+    <script src="../net-config.js"></script>
+    <script src="../net.js"></script>
+    <script src="../game.js"></script>
+    <script src="../game-ui-helpers.js"></script>
+    <script src="smoke-tests.js"></script>
+</body>
+</html>
+

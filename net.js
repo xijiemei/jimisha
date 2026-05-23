@@ -25,6 +25,7 @@ const Net = {
         lastSentBytes: 0,
         lastProbeAt: 0
     },
+    localClientId: '',
     config: window.KIMI_NET_CONFIG || {
         debug: 1,
         config: {
@@ -34,9 +35,21 @@ const Net = {
         }
     },
 
-    setupMP: function() {
+    setupMP: function(modeValue) {
+        if (modeValue !== undefined && modeValue !== null) {
+            let modeEl = document.getElementById('mp-match-size');
+            if (modeEl) modeEl.value = modeValue;
+            Game.selectedMPMode = String(modeValue);
+        } else if (!Game.selectedMPMode) {
+            Game.openPlayModeSelect('MP');
+            return;
+        }
         Game.preloadAssets();
+        this.battleMode = this.getBattleMode();
+        this.targetPlayers = this.getTargetPlayers();
+        Game.battleMode = this.battleMode;
         Game.showScreen('screen-mp-login');
+        this.updateModeLabels();
         this.setStatus('net-status', '不填猫窝 ID 会自动生成短 ID，也可以自己设置。');
     },
 
@@ -44,6 +57,7 @@ const Net = {
         if (!this.ensurePeerReady()) return;
         this.resetSession();
 
+        let clientId = this.getClientId();
         let name = this.getPlayerName();
         if (!name) {
             this.setStatus('net-status', '请先填写自己的名字。', 'danger');
@@ -65,9 +79,10 @@ const Net = {
             Game.battleMode = this.battleMode;
             Game.mode = 'MP';
             Game.myId = 0;
-            this.mpPlayers = [{ id: 0, name, peerId: id, ready: false, isHost: true, online: true, lastSeen: Date.now() }];
+            this.mpPlayers = [{ id: 0, name, peerId: id, clientId, ready: false, isHost: true, online: true, lastSeen: Date.now() }];
             Game.showScreen('screen-mp-lobby');
             this.setLobbyRoomInfo(id, roomName, true);
+            this.updateModeLabels();
             this.setStatus('lobby-status', '猫窝已建好，等朋友加入后就能发车。', 'success');
             this.updateLobby();
             this.startHeartbeat();
@@ -78,6 +93,7 @@ const Net = {
     joinRoom: function() {
         if (!this.ensurePeerReady()) return;
 
+        let clientId = this.getClientId();
         let name = this.getPlayerName();
         if (!name) {
             this.setStatus('net-status', '请先填写自己的名字。', 'danger');
@@ -95,7 +111,7 @@ const Net = {
         this.bindPeerEvents(this.peer);
         this.peer.on('open', id => {
             this.conn = this.peer.connect(hostId, { reliable: true });
-            this.bindClientConnection(this.conn, name, id);
+            this.bindClientConnection(this.conn, name, id, clientId);
         });
     },
 
@@ -107,10 +123,10 @@ const Net = {
         c.on('error', () => this.handleGuestLeft(c, '连接异常'));
     },
 
-    bindClientConnection: function(c, name, peerId) {
+    bindClientConnection: function(c, name, peerId, clientId) {
         c.on('open', () => {
             this.suppressHostClose = false;
-            c.send({ type: 'JOIN', name, peerId });
+            c.send({ type: 'JOIN', name, peerId, clientId });
             this.setStatus('net-status', '已连上猫窝，等待房主确认...', 'warn');
             this.startQualityProbe();
         });
@@ -192,6 +208,7 @@ const Net = {
             this.roomName = d.roomName || '猫窝';
             Game.showScreen('screen-mp-lobby');
             this.setLobbyRoomInfo(d.roomId || '已连接', this.roomName, false);
+            this.updateModeLabels();
             this.setStatus('lobby-status', '已进入猫窝，等待房主开始。', 'success');
         } else if (d.type === 'JOIN_DENIED') {
             let reason = d.reason || '加入失败。';
@@ -222,6 +239,7 @@ const Net = {
             Game.battleMode = this.battleMode;
             if (d.roomId) this.roomId = d.roomId;
             this.setLobbyRoomInfo(this.roomId || '已连接', this.roomName, false);
+            this.updateModeLabels();
             let active = document.querySelector('.screen.active')?.id;
             if (active === 'screen-mp-login' || active === 'screen-mp-lobby') Game.showScreen('screen-mp-lobby');
             this.updateLobbyUI();
@@ -257,18 +275,22 @@ const Net = {
     },
 
     acceptJoin: function(c, d) {
+        let clientId = this.sanitizeClientId(d.clientId);
         if (Game.gameState.started) {
+            if (this.tryReconnectPlayer(c, d)) return;
             this.send(c, { type: 'JOIN_DENIED', reason: '这局已经开始了，请下一局再加入。' });
             return;
         }
-        if (this.mpPlayers.length >= this.targetPlayers && !this.mpPlayers.some(p => p.peerId === c.peer)) {
+        if (this.mpPlayers.length >= this.targetPlayers && !this.mpPlayers.some(p => p.peerId === c.peer || (clientId && p.clientId === clientId))) {
             this.send(c, { type: 'JOIN_DENIED', reason: '猫窝已经满员了。' });
             return;
         }
 
-        let existing = this.mpPlayers.find(p => p.peerId === c.peer);
+        let existing = this.mpPlayers.find(p => (clientId && p.clientId === clientId) || p.peerId === c.peer);
         if (existing) {
             existing.name = this.sanitizeName(d.name, existing.name || '访客');
+            existing.peerId = c.peer;
+            existing.clientId = clientId || existing.clientId;
             existing.online = true;
             existing.lastSeen = Date.now();
             this.send(c, { type: 'JOIN_OK', roomId: this.roomId, roomName: this.roomName, id: existing.id });
@@ -278,7 +300,7 @@ const Net = {
 
         let newId = this.mpPlayers.length;
         let name = this.sanitizeName(d.name, '访客');
-        this.mpPlayers.push({ id: newId, name, peerId: c.peer, ready: false, isHost: false, online: true, lastSeen: Date.now() });
+        this.mpPlayers.push({ id: newId, name, peerId: c.peer, clientId, ready: false, isHost: false, online: true, lastSeen: Date.now() });
         this.send(c, { type: 'JOIN_OK', roomId: this.roomId, roomName: this.roomName, id: newId });
         this.setStatus('lobby-status', `${name} 进窝了。`, 'success');
         this.updateLobby();
@@ -298,6 +320,46 @@ const Net = {
         p.ready = true;
         this.send(c, { type: 'NOTICE', message: '选将成功，等其他猫咪准备。', tone: 'success' });
         this.updateSelectCount();
+    },
+
+    tryReconnectPlayer: function(c, d) {
+        let clientId = this.sanitizeClientId(d.clientId);
+        let name = this.sanitizeName(d.name, '');
+        let lobbyPlayer = this.mpPlayers.find(p =>
+            !p.isHost &&
+            !p.isBot &&
+            ((clientId && p.clientId === clientId) || (name && p.name === name && p.online === false))
+        );
+        if (!lobbyPlayer) return false;
+
+        let oldConn = this.connections.find(conn => conn.peer === lobbyPlayer.peerId);
+        if (oldConn && oldConn !== c) {
+            try { oldConn.close(); } catch (e) {}
+        }
+
+        lobbyPlayer.peerId = c.peer;
+        lobbyPlayer.clientId = clientId || lobbyPlayer.clientId;
+        lobbyPlayer.online = true;
+        lobbyPlayer.lastSeen = Date.now();
+
+        let gamePlayer = Game.gameState.players.find(p => p.id === lobbyPlayer.id || p.name === lobbyPlayer.name);
+        if (gamePlayer) {
+            gamePlayer.peerId = c.peer;
+            gamePlayer.disconnected = false;
+            gamePlayer.isBot = false;
+        }
+
+        if (Game.gameState.teamMode) {
+            let team = (Game.gameState.teams || []).find(t => t.id === gamePlayer?.teamId || t.peerId === lobbyPlayer.peerId);
+            if (team) team.peerId = c.peer;
+        }
+
+        this.send(c, { type: 'JOIN_OK', roomId: this.roomId, roomName: this.roomName, id: lobbyPlayer.id, reconnect: true });
+        this.send(c, { type: 'GAME', state: this.sanitizeStateForPeer(this.clone(Game.gameState), c.peer), net: this.getPeerQuality(c.peer) });
+        this.announceHostNotice(`${lobbyPlayer.name} 已重连回座。`, 'success');
+        this.updateLobby();
+        this.scheduleBroadcast();
+        return true;
     },
 
     handleGuestLeft: function(c, reason, force) {
@@ -475,6 +537,7 @@ const Net = {
                 : this.mpPlayers.map(p => {
                     let pl = Game.createPlayer(p.id, p.name, !!p.isBot);
                     pl.peerId = p.peerId;
+                    pl.clientId = p.clientId;
                     pl.hero = p.hero;
                     return pl;
                 });
@@ -501,9 +564,13 @@ const Net = {
         this.updateQualityPanel();
         this.connections.forEach(c => {
             if (c.open) {
+                let state = this.sanitizeStateForPeer(fullState, c.peer);
+                let stateJson = this.stableStringify(state);
+                if (c.lastStateJson === stateJson) return;
+                c.lastStateJson = stateJson;
                 let message = {
                     type: 'GAME',
-                    state: this.sanitizeStateForPeer(fullState, c.peer),
+                    state,
                     net: this.getPeerQuality(c.peer)
                 };
                 this.send(c, message);
@@ -513,6 +580,28 @@ const Net = {
 
     broadcastLobby: function() {
         this.sendToGuests({ type: 'LOBBY', players: this.clone(this.mpPlayers), roomId: this.roomId, roomName: this.roomName, targetPlayers: this.targetPlayers, battleMode: this.battleMode });
+    },
+
+    getModeTitle: function() {
+        let el = document.getElementById('mp-match-size');
+        let value = el ? el.value : '5';
+        if (this.battleMode === 'team3') return '1v1 至尊猫王对决';
+        if (this.battleMode === 'explosion') return `爆炸猫窝 ${this.targetPlayers || 2}人`;
+        if (this.battleMode === 'classic' && this.targetPlayers === 2) return '1v1 极速喵斗';
+        if (value === '2') return '1v1 极速喵斗';
+        if (value === 'team3') return '1v1 至尊猫王对决';
+        if (value === 'boom2') return '爆炸猫窝 2人';
+        if (value === 'boom3') return '爆炸猫窝 3人';
+        if (value === 'boom4') return '爆炸猫窝 4人';
+        return '经典五猫争霸';
+    },
+
+    updateModeLabels: function() {
+        let title = this.getModeTitle();
+        let loginLabel = document.getElementById('mp-mode-label');
+        if (loginLabel) loginLabel.innerText = `当前玩法：${title}`;
+        let lobbyLabel = document.getElementById('lobby-mode-label');
+        if (lobbyLabel) lobbyLabel.innerText = `玩法：${title}`;
     },
 
     sendAction: function(type, payload) {
@@ -637,6 +726,10 @@ const Net = {
         } catch (e) {
             try { return JSON.stringify(message).length; } catch (err) { return 0; }
         }
+    },
+
+    stableStringify: function(value) {
+        try { return JSON.stringify(value); } catch (e) { return `${Date.now()}`; }
     },
 
     recordInboundGame: function(message) {
@@ -875,6 +968,22 @@ const Net = {
         let name = String(raw || '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
         if (!name) name = fallback;
         return name.slice(0, 8);
+    },
+
+    getClientId: function() {
+        if (this.localClientId) return this.localClientId;
+        let id = '';
+        try { id = localStorage.getItem('kimiClientId') || ''; } catch (e) {}
+        if (!id) {
+            id = `kimi-client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            try { localStorage.setItem('kimiClientId', id); } catch (e) {}
+        }
+        this.localClientId = this.sanitizeClientId(id);
+        return this.localClientId;
+    },
+
+    sanitizeClientId: function(raw) {
+        return String(raw || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
     },
 
     ensurePeerReady: function() {
